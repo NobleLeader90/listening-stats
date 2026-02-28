@@ -1,6 +1,5 @@
 import { formatHour } from "../format";
 import { formatMinutes } from "../utils";
-import { PortalTooltip } from "./PortalTooltip";
 
 interface ActivityChartProps {
   hourlyDistribution: number[];
@@ -13,6 +12,7 @@ export function ActivityChart({
   peakHour,
   hourlyUnit = "ms",
 }: ActivityChartProps) {
+  const { TooltipWrapper } = Spicetify.ReactComponent;
   if (!hourlyDistribution.some((h) => h > 0)) {
     return null;
   }
@@ -38,12 +38,16 @@ export function ActivityChart({
         {hourlyDistribution.map((val, hr) => {
           const h = val > 0 ? Math.max((val / max) * 100, 5) : 0;
           return (
-            <PortalTooltip
+            <TooltipWrapper
               key={hr}
-              text={`${formatHour(hr)}: ${formatValue(val)}`}
-              className={`activity-bar ${hr === peakHour && val > 0 ? "peak" : ""}`}
-              style={{ height: `${h}%`, animationDelay: `${hr * 0.02}s` }}
-            />
+              label={`${formatHour(hr)}: ${formatValue(val)}`}
+              placement="top"
+            >
+              <div
+                className={`activity-bar ${hr === peakHour && val > 0 ? "peak" : ""}`}
+                style={{ height: `${h}%`, animationDelay: `${hr * 0.02}s` }}
+              />
+            </TooltipWrapper>
           );
         })}
       </div>

@@ -14,5 +14,4 @@ export { ActivityChart } from "./ActivityChart";
 export { ImageWithRetry } from "./ImageWithRetry";
 export { DraggableSection } from "./DraggableSection";
 export { TourOverlay } from "./TourOverlay";
-export { PortalTooltip } from "./PortalTooltip";
 export { GenreChips } from "./GenreChips";

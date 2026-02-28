@@ -2,6 +2,7 @@ import { ListeningStats, RecentTrack } from "../../types/listeningstats";
 import * as Statsfm from "../statsfm";
 import { initPoller, destroyPoller, getPollingData } from "../tracker";
 import type { TrackingProvider } from "./types";
+import { calculateStreak } from "../../utils/streak";
 
 const FREE_PERIODS = ["weeks", "months", "lifetime"] as const;
 const FREE_LABELS: Record<string, string> = {
@@ -233,19 +234,3 @@ async function calculateStatsfmStats(
   };
 }
 
-function calculateStreak(activityDates: string[]): number {
-  const dateSet = new Set(activityDates);
-  const today = new Date();
-  let streak = 0;
-  for (let i = 0; i < 365; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
-    const key = d.toISOString().split("T")[0];
-    if (dateSet.has(key)) {
-      streak++;
-    } else if (i > 0) {
-      break;
-    }
-  }
-  return streak;
-}

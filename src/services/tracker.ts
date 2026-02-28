@@ -1,59 +1,98 @@
+import { EVENTS, LS_KEYS } from "../constants";
 import { PlayEvent, PollingData, ProviderType } from "../types/listeningstats";
+import { log, warn } from "./logger";
 import { addPlayEvent } from "./storage";
 
-const STORAGE_KEY = "listening-stats:pollingData";
-const LOGGING_KEY = "listening-stats:logging";
-const STATS_UPDATED_EVENT = "listening-stats:updated";
-const THRESHOLD_KEY = "listening-stats:playThreshold";
+export { isLoggingEnabled, setLoggingEnabled } from "./logger";
+
 const DEFAULT_THRESHOLD_MS = 10000; // 10 seconds per user decision
 
 let activeProviderType: ProviderType | null = null;
 
-export function isLoggingEnabled(): boolean {
+const _warnedKeys = new Set<string>();
+function warnOnce(key: string, msg: string, err?: unknown): void {
+  if (_warnedKeys.has(key)) return;
+  _warnedKeys.add(key);
+  console.warn(`[listening-stats] ${msg}`, err ?? "");
+}
+
+export function isTrackingPaused(): boolean {
   try {
-    return localStorage.getItem(LOGGING_KEY) === "1";
-  } catch {
+    return localStorage.getItem(LS_KEYS.TRACKING_PAUSED) === "1";
+  } catch (e) {
+    warnOnce("trackingPaused", "Failed to read trackingPaused", e);
     return false;
   }
 }
 
-export function setLoggingEnabled(enabled: boolean): void {
+export function setTrackingPaused(paused: boolean): void {
   try {
-    if (enabled) localStorage.setItem(LOGGING_KEY, "1");
-    else localStorage.removeItem(LOGGING_KEY);
-  } catch {
-    /* ignore */
+    if (paused) localStorage.setItem(LS_KEYS.TRACKING_PAUSED, "1");
+    else localStorage.removeItem(LS_KEYS.TRACKING_PAUSED);
+  } catch (e) {
+    warnOnce("trackingPaused", "Failed to write trackingPaused", e);
   }
+}
+
+export function isSkipRepeatsEnabled(): boolean {
+  try {
+    return localStorage.getItem(LS_KEYS.SKIP_REPEATS) === "1";
+  } catch (e) {
+    warnOnce("skipRepeats", "Failed to read skipRepeats", e);
+    return false;
+  }
+}
+
+export function setSkipRepeatsEnabled(enabled: boolean): void {
+  try {
+    if (enabled) {
+      localStorage.setItem(LS_KEYS.SKIP_REPEATS, "1");
+      lastRecordedUri = null; // clear stale history so first play always records
+    } else {
+      localStorage.removeItem(LS_KEYS.SKIP_REPEATS);
+    }
+  } catch (e) {
+    warnOnce("skipRepeats", "Failed to write skipRepeats", e);
+  }
+}
+
+export function resetAccumulator(): void {
+  if (isPlaying) {
+    playStartTime = Date.now();
+  }
+  accumulatedPlayTime = 0;
+  log("Accumulator reset (tracking resumed)");
 }
 
 export function getPlayThreshold(): number {
   try {
-    const stored = localStorage.getItem(THRESHOLD_KEY);
+    const stored = localStorage.getItem(LS_KEYS.PLAY_THRESHOLD);
     if (stored) {
       const val = parseInt(stored, 10);
       if (val >= 0 && val <= 60000) return val; // 0-60s range
     }
-  } catch { /* ignore */ }
+  } catch (e) {
+    warnOnce("threshold", "Failed to read play threshold", e);
+  }
   return DEFAULT_THRESHOLD_MS;
 }
 
 export function setPlayThreshold(ms: number): void {
-  localStorage.setItem(THRESHOLD_KEY, String(Math.max(0, Math.min(60000, ms))));
-}
-
-function log(...args: any[]): void {
-  if (isLoggingEnabled()) console.log("[ListeningStats]", ...args);
+  localStorage.setItem(
+    LS_KEYS.PLAY_THRESHOLD,
+    String(Math.max(0, Math.min(60000, ms))),
+  );
 }
 
 export function onStatsUpdated(callback: () => void): () => void {
   const handler = () => callback();
-  window.addEventListener(STATS_UPDATED_EVENT, handler);
-  return () => window.removeEventListener(STATS_UPDATED_EVENT, handler);
+  window.addEventListener(EVENTS.STATS_UPDATED, handler);
+  return () => window.removeEventListener(EVENTS.STATS_UPDATED, handler);
 }
 
 function emitStatsUpdated(): void {
-  window.dispatchEvent(new CustomEvent(STATS_UPDATED_EVENT));
-  localStorage.setItem("listening-stats:lastUpdate", Date.now().toString());
+  window.dispatchEvent(new CustomEvent(EVENTS.STATS_UPDATED));
+  localStorage.setItem(LS_KEYS.LAST_UPDATE, Date.now().toString());
 }
 
 function defaultPollingData(): PollingData {
@@ -72,7 +111,7 @@ function defaultPollingData(): PollingData {
 
 export function getPollingData(): PollingData {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(LS_KEYS.POLLING_DATA);
     if (stored) {
       const parsed = JSON.parse(stored);
       if (
@@ -87,7 +126,7 @@ export function getPollingData(): PollingData {
       return parsed;
     }
   } catch (error) {
-    console.warn("[ListeningStats] Failed to load polling data:", error);
+    warn(" Failed to load polling data:", error);
   }
   return defaultPollingData();
 }
@@ -110,14 +149,14 @@ function savePollingData(data: PollingData): void {
       const sorted = artistEntries.sort((a, b) => b[1] - a[1]).slice(0, 1000);
       data.artistPlayCounts = Object.fromEntries(sorted);
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    localStorage.setItem(LS_KEYS.POLLING_DATA, JSON.stringify(data));
   } catch (error) {
-    console.warn("[ListeningStats] Failed to save polling data:", error);
+    warn(" Failed to save polling data:", error);
   }
 }
 
 export function clearPollingData(): void {
-  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(LS_KEYS.POLLING_DATA);
 }
 
 let currentTrackUri: string | null = null;
@@ -127,6 +166,10 @@ let isPlaying = false;
 let currentTrackDuration = 0;
 let lastProgressMs = 0;
 let progressHandler: (() => void) | null = null;
+let lastWrittenUri: string | null = null;
+let lastWrittenAt = 0;
+let lastRecordedUri: string | null = null;
+const DEDUP_WINDOW_MS = 500;
 
 async function handleSongChange(): Promise<void> {
   if (currentTrackUri && playStartTime !== null) {
@@ -135,8 +178,7 @@ async function handleSongChange(): Promise<void> {
 
     const threshold = getPlayThreshold();
     const skipped =
-      totalPlayedMs < threshold &&
-      currentTrackDuration > threshold;
+      totalPlayedMs < threshold && currentTrackDuration > threshold;
 
     if (previousTrackData) {
       log(
@@ -208,13 +250,46 @@ function captureCurrentTrackData(): void {
   };
 }
 
-async function writePlayEvent(totalPlayedMs: number, skipped?: boolean): Promise<void> {
+async function writePlayEvent(
+  totalPlayedMs: number,
+  skipped?: boolean,
+): Promise<void> {
   if (!previousTrackData) return;
+
+  if (isTrackingPaused()) {
+    log("Tracking paused: skipping write for:", previousTrackData.trackName);
+    return;
+  }
+
+  if (
+    isSkipRepeatsEnabled() &&
+    previousTrackData.trackUri === lastRecordedUri
+  ) {
+    log(
+      "Skip-repeats: suppressed consecutive play for:",
+      previousTrackData.trackName,
+    );
+    return;
+  }
+
+  const now = Date.now();
+  if (
+    previousTrackData.trackUri === lastWrittenUri &&
+    now - lastWrittenAt < DEDUP_WINDOW_MS
+  ) {
+    log(
+      "Dedup: suppressed duplicate write for",
+      previousTrackData.trackName,
+      `(${now - lastWrittenAt}ms since last write)`,
+    );
+    return;
+  }
 
   // Determine skip status if not already computed by caller
   if (skipped === undefined) {
     const threshold = getPlayThreshold();
-    skipped = totalPlayedMs < threshold && previousTrackData.durationMs > threshold;
+    skipped =
+      totalPlayedMs < threshold && previousTrackData.durationMs > threshold;
   }
 
   const event: PlayEvent = {
@@ -236,6 +311,11 @@ async function writePlayEvent(totalPlayedMs: number, skipped?: boolean): Promise
     const written = await addPlayEvent(event);
     if (written) {
       // Only update polling data when event was actually written to IndexedDB
+      lastWrittenUri = previousTrackData.trackUri;
+      lastWrittenAt = Date.now();
+      if (!skipped && isSkipRepeatsEnabled()) {
+        lastRecordedUri = previousTrackData.trackUri; // update skip-repeats tracker
+      }
       const data = getPollingData();
       data.totalPlays++;
       if (skipped) {
@@ -250,7 +330,7 @@ async function writePlayEvent(totalPlayedMs: number, skipped?: boolean): Promise
       log("Dedup guard blocked duplicate event, polling data unchanged");
     }
   } catch (err) {
-    console.warn("[ListeningStats] Failed to write play event:", err);
+    warn(" Failed to write play event:", err);
   }
 }
 
@@ -313,7 +393,9 @@ export function initPoller(providerType: ProviderType): void {
   captureCurrentTrackData();
   activeSongChangeHandler = () => {
     lastProgressMs = 0; // Reset progress tracker to prevent false loop detection after real track change
-    handleSongChange();
+    handleSongChange().catch((e) => {
+      warn("songchange handler error:", e);
+    });
     captureCurrentTrackData();
   };
 
@@ -339,6 +421,28 @@ export function initPoller(providerType: ProviderType): void {
     playStartTime = Date.now();
     isPlaying = !playerData.isPaused;
   }
+
+  // Watchdog: re-register listeners if they go missing (e.g., after sleep/wake)
+  if (pollIntervalId !== null) clearInterval(pollIntervalId);
+  pollIntervalId = setInterval(() => {
+    if (!win.__lsSongHandler) {
+      warn("Watchdog: songchange listener lost, re-registering");
+      activeSongChangeHandler = () => {
+        lastProgressMs = 0;
+        handleSongChange().catch((e) => {
+          warn("songchange handler error:", e);
+        });
+        captureCurrentTrackData();
+      };
+      progressHandler = handleProgress;
+      Spicetify.Player.addEventListener("songchange", activeSongChangeHandler);
+      Spicetify.Player.addEventListener("onplaypause", handlePlayPause);
+      Spicetify.Player.addEventListener("onprogress", progressHandler);
+      win.__lsSongHandler = activeSongChangeHandler;
+      win.__lsPauseHandler = handlePlayPause;
+      win.__lsProgressHandler = progressHandler;
+    }
+  }, 300_000) as unknown as number; // Check every 5 minutes
 }
 
 export function destroyPoller(): void {
@@ -357,6 +461,9 @@ export function destroyPoller(): void {
   win.__lsPauseHandler = null;
   win.__lsProgressHandler = null;
   lastProgressMs = 0;
+  lastWrittenUri = null;
+  lastRecordedUri = null;
+  lastWrittenAt = 0;
 
   if (pollIntervalId !== null) {
     clearInterval(pollIntervalId);

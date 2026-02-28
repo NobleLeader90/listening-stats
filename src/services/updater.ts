@@ -1,5 +1,7 @@
+import { error } from "./logger";
+import { LS_KEYS } from "../constants";
+
 const GITHUB_REPO = "Xndr2/listening-stats";
-const STORAGE_KEY = "listening-stats:lastUpdateCheck";
 
 declare const __APP_VERSION__: string;
 
@@ -31,6 +33,7 @@ export function getCurrentVersion(): string {
   try {
     return __APP_VERSION__;
   } catch {
+    // __APP_VERSION__ is an esbuild compile-time constant -- only undefined in test environments
     return "0.0.0";
   }
 }
@@ -62,7 +65,7 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
     const available = isNewerVersion(latestVersion, currentVersion);
 
     localStorage.setItem(
-      STORAGE_KEY,
+      LS_KEYS.LAST_UPDATE_CHECK,
       JSON.stringify({
         checkedAt: Date.now(),
         latestVersion,
@@ -78,8 +81,8 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
       downloadUrl: distAsset?.browser_download_url || null,
       releaseUrl: release.html_url,
     };
-  } catch (error) {
-    console.error("[ListeningStats] Update check failed:", error);
+  } catch (err) {
+    error("Update check failed:", err);
     return {
       available: false,
       currentVersion,
@@ -112,21 +115,10 @@ export function getInstallCommand(): string {
 export async function copyInstallCommand(): Promise<boolean> {
   const cmd = getInstallCommand();
   try {
-    await navigator.clipboard.writeText(cmd);
+    await Spicetify.Platform.ClipboardAPI.copy(cmd);
     return true;
   } catch (e) {
-    try {
-      const textarea = document.createElement("textarea");
-      textarea.value = cmd;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textarea);
-      return true;
-    } catch {
-      return false;
-    }
+    console.warn("[listening-stats] Clipboard copy failed", e);
+    return false;
   }
 }

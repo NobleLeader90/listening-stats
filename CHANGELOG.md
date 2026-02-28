@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.3.68
+
+### Added
+
+- **Tracking controls** — pause/resume tracking and skip-repeat detection toggle in Advanced settings
+- **Period persistence** — selected time period is remembered across navigation and page reloads
+- **Playlist automation** — auto-updating playlists from your top tracks, configurable in settings
+
+### Changed
+
+- **Centralized constants** — all localStorage keys and event names defined in a single module
+- **Shared streak utility** — streak calculation extracted to a shared function, zero duplication across providers
+- **SettingsPanel refactored** — 16 useState calls consolidated into 3 useReducer groups
+- **Native Spicetify components** — custom PortalTooltip replaced with TooltipWrapper, custom toggles replaced with Spicetify Toggle
+- **Spicetify built-in APIs** — URI parsing uses URI.fromString(), clipboard uses Platform.ClipboardAPI, formatting uses Spicetify.Locale
+- **Error handling standardized** — silent catch blocks replaced with logged warnings across all services
+
+### Fixed
+
+- **Double scrobbling** — debounce guard prevents duplicate play events from rapid Spotify events
+- **Top track ordering** — sort comparators now correctly rank by play count/listen time
+- **Local provider artist images** — top artists now enriched with Spotify images
+- **Stats refresh** — quiet in-place update instead of full page refresh
+- **Console logging** — all output routed through shared logger with toggle control
+
 ## 1.3.27
 
 ### Added

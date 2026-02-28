@@ -1,9 +1,11 @@
 import { ApiError } from "../services/api-resilience";
+import { log, error as logError } from "../services/logger";
 import { getPreferences, onPreferencesChanged } from "../services/preferences";
 import {
   activateProvider,
   getActiveProvider,
   getSelectedProviderType,
+  TrackingProvider,
 } from "../services/providers";
 import { calculateStats, clearStatsCache } from "../services/stats";
 import * as Statsfm from "../services/statsfm";
@@ -37,13 +39,39 @@ import { TourProvider, TourStep, useTour } from "./hooks/useTour";
 import { injectStyles } from "./styles";
 import { checkLikedTracks, toggleLike } from "./utils";
 
-const { useRef, useState, useCallback, useEffect } = Spicetify.React;
+import { LS_KEYS, EVENTS } from "../constants";
 
-const SFM_PROMO_KEY = "listening-stats:sfm-promo-dismissed";
+const { useRef, useState, useCallback, useEffect } = Spicetify.React;
 
 const VERSION = getCurrentVersion();
 
-const TOUR_SEEN_KEY = "listening-stats:tour-seen";
+const _warnedKeys = new Set<string>();
+function warnOnce(key: string, msg: string, err?: unknown): void {
+  if (_warnedKeys.has(key)) return;
+  _warnedKeys.add(key);
+  console.warn(`[listening-stats] ${msg}`, err ?? "");
+}
+
+function getPersistedPeriod(provider: TrackingProvider | null): string {
+  if (!provider) return "recent";
+  try {
+    const stored = localStorage.getItem(LS_KEYS.PERIOD);
+    if (stored && provider.periods.includes(stored)) {
+      return stored;
+    }
+  } catch (e) {
+    warnOnce("period", "Failed to read persisted period", e);
+  }
+  return provider.defaultPeriod;
+}
+
+function persistPeriod(period: string): void {
+  try {
+    localStorage.setItem(LS_KEYS.PERIOD, period);
+  } catch (e) {
+    warnOnce("period", "Failed to persist period", e);
+  }
+}
 
 function buildTourSteps(providerType: ProviderType | null): TourStep[] {
   const steps: TourStep[] = [
@@ -108,19 +136,20 @@ function buildTourSteps(providerType: ProviderType | null): TourStep[] {
 
 function shouldShowTour(): "full" | "none" {
   try {
-    const seen = localStorage.getItem(TOUR_SEEN_KEY);
+    const seen = localStorage.getItem(LS_KEYS.TOUR_SEEN);
     if (!seen) return "full";
     return "none";
-  } catch {
+  } catch (e) {
+    warnOnce("tourSeen", "Failed to read tour seen flag", e);
     return "none";
   }
 }
 
 function markTourComplete(): void {
   try {
-    localStorage.setItem(TOUR_SEEN_KEY, "1");
-  } catch {
-    /* ignore */
+    localStorage.setItem(LS_KEYS.TOUR_SEEN, "1");
+  } catch (e) {
+    warnOnce("tourSeen", "Failed to write tour seen flag", e);
   }
 }
 
@@ -190,9 +219,9 @@ function DashboardSections(props: DashboardSectionsProps) {
     const handler = () => {
       startTour(buildTourSteps(props.providerType));
     };
-    window.addEventListener("listening-stats:start-tour", handler);
+    window.addEventListener(EVENTS.START_TOUR, handler);
     return () =>
-      window.removeEventListener("listening-stats:start-tour", handler);
+      window.removeEventListener(EVENTS.START_TOUR, handler);
   }, [startTour]);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -407,7 +436,7 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
     const provider = getActiveProvider();
 
     this.state = {
-      period: provider?.defaultPeriod || "recent",
+      period: getPersistedPeriod(provider),
       stats: null,
       loading: !needsSetup,
       error: null,
@@ -434,11 +463,11 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
 
       if (this.state.providerType && this.state.providerType !== "statsfm") {
         try {
-          if (!localStorage.getItem(SFM_PROMO_KEY)) {
+          if (!localStorage.getItem(LS_KEYS.SFM_PROMO_DISMISSED)) {
             this.setState({ showSfmPromo: true });
           }
-        } catch {
-          /* ignore */
+        } catch (e) {
+          console.warn("[listening-stats] Failed to read SFM promo dismissed flag", e);
         }
       }
     }
@@ -446,7 +475,7 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
     this.unsubStatsUpdate = onStatsUpdated(() => {
       if (!this.state.needsSetup && !this.state.loading) {
         clearStatsCache();
-        this.loadStats();
+        this.refreshStatsQuietly();
       }
     });
 
@@ -495,7 +524,7 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
         "Failed to copy. Check console for command.",
         true,
       );
-      console.log("[ListeningStats] Install command:", getInstallCommand());
+      log("Install command:", getInstallCommand());
     }
   };
 
@@ -529,13 +558,30 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
         }
       }
     } catch (e: any) {
-      console.error("[ListeningStats] Load failed:", e);
+      logError("Load failed:", e);
       const isApiError = e instanceof ApiError || e?.name === "ApiError";
       this.setState({
         loading: false,
         error: e.message || "Failed to load stats",
         errorType: isApiError ? "api" : "generic",
       });
+    }
+  };
+
+  refreshStatsQuietly = async () => {
+    try {
+      const data = await calculateStats(this.state.period);
+      this.setState({ stats: data });
+
+      if (data.topTracks.length > 0 && data.topTracks[0].trackUri) {
+        const uris = data.topTracks.map((t) => t.trackUri).filter(Boolean);
+        if (uris.length > 0) {
+          const liked = await checkLikedTracks(uris);
+          this.setState({ likedTracks: liked });
+        }
+      }
+    } catch (e) {
+      console.warn("[listening-stats] Background stats refresh failed", e);
     }
   };
 
@@ -549,6 +595,7 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
   };
 
   handlePeriodChange = (period: string) => {
+    persistPeriod(period);
     this.setState({ period });
   };
 
@@ -559,9 +606,9 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
   dismissSfmPromo = () => {
     this.setState({ showSfmPromo: false });
     try {
-      localStorage.setItem(SFM_PROMO_KEY, "1");
-    } catch {
-      /* ignore */
+      localStorage.setItem(LS_KEYS.SFM_PROMO_DISMISSED, "1");
+    } catch (e) {
+      console.warn("[listening-stats] Failed to write SFM promo dismissed flag", e);
     }
   };
 
@@ -596,13 +643,14 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
       let showSfmPromo = false;
       if (provider.type !== "statsfm") {
         try {
-          if (!localStorage.getItem(SFM_PROMO_KEY)) {
+          if (!localStorage.getItem(LS_KEYS.SFM_PROMO_DISMISSED)) {
             showSfmPromo = true;
           }
-        } catch {
-          /* ignore */
+        } catch (e) {
+          console.warn("[listening-stats] Failed to read SFM promo dismissed flag", e);
         }
       }
+      persistPeriod(provider.defaultPeriod);
       this.setState(
         {
           needsSetup: false,
@@ -627,11 +675,12 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
       if (isStatsfm) {
         // Switching to stats.fm implicitly dismisses the promo
         try {
-          localStorage.setItem(SFM_PROMO_KEY, "1");
-        } catch {
-          /* ignore */
+          localStorage.setItem(LS_KEYS.SFM_PROMO_DISMISSED, "1");
+        } catch (e) {
+          console.warn("[listening-stats] Failed to write SFM promo dismissed flag", e);
         }
       }
+      persistPeriod(provider.defaultPeriod);
       this.setState(
         {
           providerType: provider.type,

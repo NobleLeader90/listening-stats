@@ -5,7 +5,6 @@ import { formatNumber } from "../format";
 import { Icons } from "../icons";
 import { getRankClass, navigateToUri } from "../utils";
 import { ImageWithRetry } from "./ImageWithRetry";
-import { PortalTooltip } from "./PortalTooltip";
 
 interface TopListsProps {
   stats: ListeningStats;
@@ -22,6 +21,7 @@ export function TopLists({
   showLikeButtons = true,
   period = "",
 }: TopListsProps) {
+  const { TooltipWrapper } = Spicetify.ReactComponent;
   const itemCount = getPreferences().itemsPerSection;
 
   return (
@@ -74,12 +74,12 @@ export function TopLists({
                     }}
                   />
                 ) : (
-                  <PortalTooltip text="No Spotify link, can't save to library">
+                  <TooltipWrapper label="No Spotify link, can't save to library" placement="top">
                     <span
                       className="heart-btn disabled"
                       dangerouslySetInnerHTML={{ __html: Icons.heart }}
                     />
-                  </PortalTooltip>
+                  </TooltipWrapper>
                 ))}
             </div>
           ))}

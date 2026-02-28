@@ -1,7 +1,7 @@
 import { LastfmConfig } from "../types/listeningstats";
+import { LS_KEYS } from "../constants";
 
 const LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/";
-const STORAGE_KEY = "listening-stats:lastfm";
 const CACHE_TTL_MS = 300000;
 
 let configCache: LastfmConfig | null | undefined = undefined;
@@ -9,13 +9,13 @@ let configCache: LastfmConfig | null | undefined = undefined;
 export function getConfig(): LastfmConfig | null {
   if (configCache !== undefined) return configCache;
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(LS_KEYS.LASTFM_CONFIG);
     if (stored) {
       configCache = JSON.parse(stored);
       return configCache!;
     }
-  } catch {
-    /* ignore */
+  } catch (e) {
+    console.warn("[listening-stats] Last.fm config read failed", e);
   }
   configCache = null;
   return null;
@@ -23,12 +23,12 @@ export function getConfig(): LastfmConfig | null {
 
 export function saveConfig(config: LastfmConfig): void {
   configCache = config;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  localStorage.setItem(LS_KEYS.LASTFM_CONFIG, JSON.stringify(config));
 }
 
 export function clearConfig(): void {
   configCache = null;
-  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(LS_KEYS.LASTFM_CONFIG);
 }
 
 export function isConnected(): boolean {
@@ -329,7 +329,8 @@ export async function getUserInfo(): Promise<LastfmUserInfo | null> {
 
   try {
     return await validateUser(config.username, config.apiKey);
-  } catch {
+  } catch (e) {
+    console.warn("[listening-stats] Last.fm date parsing failed", e);
     return null;
   }
 }

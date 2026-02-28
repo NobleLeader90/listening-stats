@@ -118,7 +118,8 @@ function extractDominantColor(img: HTMLImageElement): [number, number, number] {
     const max = Math.max(d[0], d[1], d[2]);
     if (max < 60) return GREEN;
     return [d[0], d[1], d[2]];
-  } catch {
+  } catch (e) {
+    console.warn("[listening-stats] Share card image load failed", e);
     return GREEN;
   }
 }
@@ -1005,16 +1006,16 @@ export async function shareOrDownload(
       });
       await navigator.share({ files: [file] });
       return "shared";
-    } catch {
-      /* user cancelled or not supported */
+    } catch (e) {
+      console.warn("[listening-stats] Share card blob creation failed", e);
     }
   }
 
   try {
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
     return "copied";
-  } catch {
-    /* clipboard not supported */
+  } catch (e) {
+    console.warn("[listening-stats] Share card clipboard write failed", e);
   }
 
   const url = URL.createObjectURL(blob);

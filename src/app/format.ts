@@ -1,9 +1,7 @@
 import { getPreferences } from "../services/preferences";
 
-const numberFormatter = new Intl.NumberFormat();
-
 export function formatNumber(n: number): string {
-  return numberFormatter.format(n);
+  return Spicetify.Locale?.formatNumber?.(n) ?? n.toLocaleString();
 }
 
 export function formatHour(h: number): string {
@@ -23,8 +21,10 @@ export function formatHour(h: number): string {
 export function renderMarkdown(text: string): string {
   if (!text) return "";
 
-  // Escape HTML entities
+  // Normalize line endings and escape HTML entities
   let html = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -59,10 +59,10 @@ export function renderMarkdown(text: string): string {
       continue;
     }
 
-    // List items (- or *)
-    if (line.match(/^[\-\*]\s+(.+)$/)) {
+    // List items (- or *, with optional leading whitespace)
+    if (line.match(/^\s*[\-\*]\s+(.+)$/)) {
       if (!inList) { processed.push("<ul>"); inList = true; }
-      processed.push(`<li>${line.replace(/^[\-\*]\s+/, "")}</li>`);
+      processed.push(`<li>${line.replace(/^\s*[\-\*]\s+/, "")}</li>`);
       continue;
     }
 

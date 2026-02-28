@@ -1,11 +1,11 @@
-import { openDB, deleteDB, type IDBPDatabase } from "idb";
+import { deleteDB, openDB, type IDBPDatabase } from "idb";
+import { LS_KEYS } from "../constants";
 import { PlayEvent } from "../types/listeningstats";
+import { error, log, warn } from "./logger";
 
 const DB_NAME = "listening-stats";
 const DB_VERSION = 4;
 const STORE_NAME = "playEvents";
-const BACKUP_LS_KEY = "listening-stats:migration-backup";
-const BACKUP_VERSION_KEY = "listening-stats:migration-version";
 const BACKUP_DB_NAME = "listening-stats-backup";
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
@@ -32,24 +32,24 @@ async function backupBeforeMigration(): Promise<PlayEvent[]> {
     }
 
     // Store old version so we know a migration is in progress
-    localStorage.setItem(BACKUP_VERSION_KEY, String(version));
+    localStorage.setItem(LS_KEYS.MIGRATION_VERSION, String(version));
 
     // Try localStorage first (always overwrite any stale backup)
     try {
       const json = JSON.stringify(events);
-      localStorage.setItem(BACKUP_LS_KEY, json);
-      console.log(`[ListeningStats] Backed up ${events.length} events to localStorage`);
+      localStorage.setItem(LS_KEYS.MIGRATION_BACKUP, json);
+      log(` Backed up ${events.length} events to localStorage`);
     } catch (e: any) {
       if (e?.name === "QuotaExceededError" || e?.code === 22) {
         // localStorage full -- fall back to separate IndexedDB database
-        console.warn("[ListeningStats] localStorage full, using IndexedDB backup");
-        localStorage.removeItem(BACKUP_LS_KEY);
+        warn(" localStorage full, using IndexedDB backup");
+        localStorage.removeItem(LS_KEYS.MIGRATION_BACKUP);
 
         // Always replace stale backup DB
         try {
           await deleteDB(BACKUP_DB_NAME);
         } catch {
-          // ignore if it doesn't exist
+          // Backup DB may not exist -- safe to ignore
         }
 
         const backupDb = await openDB(BACKUP_DB_NAME, 1, {
@@ -59,13 +59,13 @@ async function backupBeforeMigration(): Promise<PlayEvent[]> {
         });
         await backupDb.put("backup", events, "events");
         backupDb.close();
-        console.log(`[ListeningStats] Backed up ${events.length} events to IndexedDB`);
+        log(` Backed up ${events.length} events to IndexedDB`);
       } else {
         throw e;
       }
     }
   } catch (e) {
-    console.error("[ListeningStats] Backup failed:", e);
+    error(" Backup failed:", e);
   }
 
   return events;
@@ -80,12 +80,12 @@ async function restoreFromBackup(): Promise<void> {
 
   // Try localStorage first
   try {
-    const json = localStorage.getItem(BACKUP_LS_KEY);
+    const json = localStorage.getItem(LS_KEYS.MIGRATION_BACKUP);
     if (json) {
       events = JSON.parse(json);
     }
   } catch {
-    // corrupted JSON, try IndexedDB
+    // Corrupted JSON in localStorage backup -- fall through to IndexedDB backup
   }
 
   // Fall back to IndexedDB backup
@@ -101,7 +101,7 @@ async function restoreFromBackup(): Promise<void> {
       events = await backupDb.get("backup", "events");
       backupDb.close();
     } catch {
-      // No backup database exists
+      // No backup database exists -- backup may have been cleaned up already
     }
   }
 
@@ -116,11 +116,11 @@ async function restoreFromBackup(): Promise<void> {
           await tx.store.add(event);
         }
         await tx.done;
-        console.log(`[ListeningStats] Restored ${events.length} events from backup`);
+        log(` Restored ${events.length} events from backup`);
       }
       db.close();
     } catch (e) {
-      console.error("[ListeningStats] Restore failed:", e);
+      error(" Restore failed:", e);
     }
   }
 
@@ -134,19 +134,25 @@ async function restoreFromBackup(): Promise<void> {
  */
 async function cleanupBackup(): Promise<void> {
   try {
-    localStorage.removeItem(BACKUP_LS_KEY);
-  } catch {
-    // ignore
+    localStorage.removeItem(LS_KEYS.MIGRATION_BACKUP);
+  } catch (e) {
+    console.warn(
+      "[listening-stats] Failed to remove migration backup from localStorage",
+      e,
+    );
   }
   try {
-    localStorage.removeItem(BACKUP_VERSION_KEY);
-  } catch {
-    // ignore
+    localStorage.removeItem(LS_KEYS.MIGRATION_VERSION);
+  } catch (e) {
+    console.warn(
+      "[listening-stats] Failed to remove migration version from localStorage",
+      e,
+    );
   }
   try {
     await deleteDB(BACKUP_DB_NAME);
   } catch {
-    // ignore if it doesn't exist
+    // Backup DB may not exist -- safe to ignore
   }
 }
 
@@ -160,14 +166,20 @@ export async function getDB(): Promise<IDBPDatabase> {
   }
   try {
     const db = await dbPromise;
-    // Verify connection is still valid
-    if (!db.objectStoreNames.contains(STORE_NAME)) {
+    // Verify connection is still alive by attempting a real transaction
+    try {
+      const tx = db.transaction(STORE_NAME, "readonly");
+      tx.abort();
+      await tx.done.catch(() => {});
+    } catch {
+      // Connection is dead (InvalidStateError after browser sleep/wake) -- reconnect
+      log("IndexedDB connection stale, reconnecting...");
       dbPromise = initDB();
       return dbPromise;
     }
     return db;
   } catch {
-    // Connection failed, retry with fresh init
+    // Initial connection failed -- retry with fresh init
     dbPromise = initDB();
     return dbPromise;
   }
@@ -186,13 +198,14 @@ async function initDB(): Promise<IDBPDatabase> {
       needsBackup = oldDbVersion < DB_VERSION;
     }
   } catch {
-    // indexedDB.databases() not supported — fall back to opening
+    // Feature detection -- databases() not available in all browsers, fall back to opening
     try {
       const existingDb = await openDB(DB_NAME);
       oldDbVersion = existingDb.version;
       existingDb.close();
       needsBackup = oldDbVersion < DB_VERSION && oldDbVersion > 0;
     } catch {
+      // DB does not exist yet -- fresh install, no backup needed
       needsBackup = false;
     }
   }
@@ -216,7 +229,7 @@ async function initDB(): Promise<IDBPDatabase> {
           store.createIndex("by-artistUri", "artistUri");
           store.createIndex("by-type", "type");
         } else {
-          // Store exists — add any missing indexes
+          // Store exists, add any missing indexes
           const store = transaction.objectStore(STORE_NAME);
           if (!store.indexNames.contains("by-startedAt")) {
             store.createIndex("by-startedAt", "startedAt");
@@ -238,22 +251,24 @@ async function initDB(): Promise<IDBPDatabase> {
     if (needsBackup) {
       await cleanupBackup();
       Spicetify?.showNotification?.("Database updated successfully");
-      console.log(`[ListeningStats] Migration from v${oldDbVersion} to v${DB_VERSION} complete`);
+      log(` Migration from v${oldDbVersion} to v${DB_VERSION} complete`);
     }
 
-    // Run one-time dedup pass if needed
-    const dedupDone = localStorage.getItem("listening-stats:dedup-done");
+    // Run one-time dedup pass if needed (v2: keeps highest playedMs per group)
+    const dedupDone = localStorage.getItem(LS_KEYS.DEDUP_V2_DONE);
     if (!dedupDone) {
-      const removed = await runDedup(db);
-      if (removed > 0) {
-        Spicetify?.showNotification?.(`Cleaned up ${removed} duplicate entries`);
+      const dedupResult = await runDedup(db);
+      if (dedupResult.removed > 0) {
+        Spicetify?.showNotification?.(
+          `Cleaned up ${dedupResult.removed} duplicate entries`,
+        );
       }
-      localStorage.setItem("listening-stats:dedup-done", "1");
+      localStorage.setItem(LS_KEYS.DEDUP_V2_DONE, "1");
     }
 
     return db;
   } catch (e) {
-    console.error("[ListeningStats] Migration failed, attempting rollback:", e);
+    error(" Migration failed, attempting rollback:", e);
 
     if (needsBackup) {
       await restoreFromBackup();
@@ -261,58 +276,79 @@ async function initDB(): Promise<IDBPDatabase> {
 
     // Re-open at whatever version the DB is now (fallback)
     const fallbackDb = await openDB(DB_NAME);
-    console.log(`[ListeningStats] Opened fallback DB at v${fallbackDb.version}`);
+    log(` Opened fallback DB at v${fallbackDb.version}`);
     return fallbackDb;
   }
 }
 
 /**
  * Internal dedup runner that operates on an already-opened database.
+ * Groups events by trackUri:startedAt, keeps the entry with the highest playedMs.
  */
-async function runDedup(db: IDBPDatabase): Promise<number> {
+async function runDedup(
+  db: IDBPDatabase,
+): Promise<{ removed: number; affectedTracks: number }> {
   try {
     const allEvents: PlayEvent[] = await db.getAll(STORE_NAME);
-    const seen = new Set<string>();
-    const duplicateIds: number[] = [];
+    const byKey = new Map<string, PlayEvent>();
 
     for (const event of allEvents) {
       const key = `${event.trackUri}:${event.startedAt}`;
-      if (seen.has(key)) {
-        duplicateIds.push(event.id!);
-      } else {
-        seen.add(key);
+      const existing = byKey.get(key);
+      if (!existing || event.playedMs > existing.playedMs) {
+        byKey.set(key, event);
       }
     }
 
-    if (duplicateIds.length > 0) {
+    const keepIds = new Set(Array.from(byKey.values()).map((e) => e.id!));
+    const toDelete = allEvents.filter((e) => !keepIds.has(e.id!));
+    const affectedTracks = new Set(toDelete.map((e) => e.trackUri));
+
+    if (toDelete.length > 0) {
       const tx = db.transaction(STORE_NAME, "readwrite");
-      for (const id of duplicateIds) {
-        tx.store.delete(id);
+      for (const event of toDelete) {
+        tx.store.delete(event.id!);
       }
       await tx.done;
-      console.log(`[ListeningStats] Removed ${duplicateIds.length} duplicate events`);
+      log(
+        ` Removed ${toDelete.length} duplicate events across ${affectedTracks.size} tracks`,
+      );
     }
 
-    return duplicateIds.length;
+    return { removed: toDelete.length, affectedTracks: affectedTracks.size };
   } catch (e) {
-    console.error("[ListeningStats] Dedup failed:", e);
-    return 0;
+    error(" Dedup failed:", e);
+    return { removed: 0, affectedTracks: 0 };
   }
 }
 
 export async function addPlayEvent(event: PlayEvent): Promise<boolean> {
-  const db = await getDB();
-  const range = IDBKeyRange.only(event.startedAt);
-  const existing = await db.getAllFromIndex(STORE_NAME, "by-startedAt", range);
-  if (existing.some((e: PlayEvent) => e.trackUri === event.trackUri)) {
-    console.warn("[ListeningStats] Duplicate event blocked:", event.trackName);
-    return false;
+  try {
+    const db = await getDB();
+    const range = IDBKeyRange.only(event.startedAt);
+    const existing = await db.getAllFromIndex(
+      STORE_NAME,
+      "by-startedAt",
+      range,
+    );
+    if (existing.some((e: PlayEvent) => e.trackUri === event.trackUri)) {
+      warn(" Duplicate event blocked:", event.trackName);
+      return false;
+    }
+    await db.add(STORE_NAME, event);
+    return true;
+  } catch (e) {
+    // Connection likely dead, reset so next call reconnects
+    warn(" addPlayEvent failed, resetting DB connection:", e);
+    dbPromise = null;
+    throw e;
   }
-  await db.add(STORE_NAME, event);
-  return true;
 }
 
-export async function deduplicateExistingEvents(): Promise<number> {
+export async function deduplicateExistingEvents(): Promise<{
+  removed: number;
+  affectedTracks: number;
+}> {
   const db = await getDB();
   return runDedup(db);
 }
@@ -335,5 +371,5 @@ export async function clearAllData(): Promise<void> {
   const db = await getDB();
   await db.clear(STORE_NAME);
   resetDBPromise();
-  console.log("[ListeningStats] IndexedDB data cleared");
+  log("IndexedDB data cleared");
 }

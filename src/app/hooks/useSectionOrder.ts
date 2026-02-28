@@ -1,6 +1,6 @@
-const { useState, useCallback, useEffect } = Spicetify.React;
+import { LS_KEYS, EVENTS } from "../../constants";
 
-const LAYOUT_KEY = "listening-stats:card-order";
+const { useState, useCallback, useEffect } = Spicetify.React;
 
 export const DEFAULT_ORDER: string[] = [
   "overview",
@@ -14,13 +14,13 @@ export const DEFAULT_ORDER: string[] = [
  * Hook to manage the order of dashboard sections with localStorage persistence.
  * Validates stored order on load: removes stale IDs and appends missing IDs
  * so that new sections added in future updates appear at the end.
- * Listens for "listening-stats:reset-layout" custom event to reset order
+ * Listens for EVENTS.RESET_LAYOUT custom event to reset order
  * (dispatched by Settings panel Reset button).
  */
 export function useSectionOrder() {
   const [order, setOrder] = useState<string[]>(() => {
     try {
-      const stored = localStorage.getItem(LAYOUT_KEY);
+      const stored = localStorage.getItem(LS_KEYS.CARD_ORDER);
       if (stored) {
         const parsed = JSON.parse(stored) as string[];
         if (Array.isArray(parsed)) {
@@ -35,8 +35,8 @@ export function useSectionOrder() {
           return validated;
         }
       }
-    } catch {
-      // Ignore parse errors, fall through to default
+    } catch (e) {
+      console.warn("[listening-stats] Section order access failed", e);
     }
     return [...DEFAULT_ORDER];
   });
@@ -44,9 +44,9 @@ export function useSectionOrder() {
   const reorder = useCallback((newOrder: string[]) => {
     setOrder(newOrder);
     try {
-      localStorage.setItem(LAYOUT_KEY, JSON.stringify(newOrder));
-    } catch {
-      // Ignore quota errors
+      localStorage.setItem(LS_KEYS.CARD_ORDER, JSON.stringify(newOrder));
+    } catch (e) {
+      console.warn("[listening-stats] Section order access failed", e);
     }
   }, []);
 
@@ -54,18 +54,18 @@ export function useSectionOrder() {
     const defaultCopy = [...DEFAULT_ORDER];
     setOrder(defaultCopy);
     try {
-      localStorage.setItem(LAYOUT_KEY, JSON.stringify(defaultCopy));
-    } catch {
-      // Ignore quota errors
+      localStorage.setItem(LS_KEYS.CARD_ORDER, JSON.stringify(defaultCopy));
+    } catch (e) {
+      console.warn("[listening-stats] Section order access failed", e);
     }
   }, []);
 
   // Listen for reset-layout custom event from Settings panel
   useEffect(() => {
     const handler = () => resetOrder();
-    window.addEventListener("listening-stats:reset-layout", handler);
+    window.addEventListener(EVENTS.RESET_LAYOUT, handler);
     return () => {
-      window.removeEventListener("listening-stats:reset-layout", handler);
+      window.removeEventListener(EVENTS.RESET_LAYOUT, handler);
     };
   }, [resetOrder]);
 

@@ -6,24 +6,157 @@ import {
 } from "../../services/export";
 import * as LastFm from "../../services/lastfm";
 import { getPreferences, setPreference } from "../../services/preferences";
+
 import {
   activateProvider,
   clearProviderSelection,
+  getActiveProvider,
   getSelectedProviderType,
 } from "../../services/providers";
 import { clearApiCaches, resetRateLimit } from "../../services/spotify-api";
 import { clearStatsCache } from "../../services/stats";
 import * as Statsfm from "../../services/statsfm";
-import { clearAllData as clearIndexedDB } from "../../services/storage";
+import { clearAllData as clearIndexedDB, deduplicateExistingEvents } from "../../services/storage";
+import { error } from "../../services/logger";
 import {
   clearPollingData,
   isLoggingEnabled,
+  isSkipRepeatsEnabled,
+  isTrackingPaused,
+  resetAccumulator,
   setLoggingEnabled,
+  setSkipRepeatsEnabled,
+  setTrackingPaused,
 } from "../../services/tracker";
 import { ListeningStats, ProviderType } from "../../types/listeningstats";
 import { Icons } from "../icons";
+import { LS_KEYS, EVENTS, clearAllLocalStorage } from "../../constants";
 
-const { useState } = Spicetify.React;
+const { useState, useReducer } = Spicetify.React;
+
+// --- Reducer: Provider Form State ---
+
+interface ProviderFormState {
+  showProviderPicker: boolean;
+  lfmUsername: string;
+  lfmApiKey: string;
+  lfmValidating: boolean;
+  lfmError: string;
+  sfmUsername: string;
+  sfmValidating: boolean;
+  sfmError: string;
+}
+
+type ProviderFormAction =
+  | { type: "TOGGLE_PICKER" }
+  | { type: "CLOSE_PICKER" }
+  | { type: "SET_LFM_FIELD"; field: "username" | "apiKey"; value: string }
+  | { type: "LFM_VALIDATE_START" }
+  | { type: "LFM_VALIDATE_ERROR"; error: string }
+  | { type: "LFM_VALIDATE_SUCCESS" }
+  | { type: "SET_SFM_USERNAME"; value: string }
+  | { type: "SFM_VALIDATE_START" }
+  | { type: "SFM_VALIDATE_ERROR"; error: string }
+  | { type: "SFM_VALIDATE_SUCCESS" };
+
+function providerFormReducer(state: ProviderFormState, action: ProviderFormAction): ProviderFormState {
+  switch (action.type) {
+    case "TOGGLE_PICKER":
+      return { ...state, showProviderPicker: !state.showProviderPicker };
+    case "CLOSE_PICKER":
+      return { ...state, showProviderPicker: false };
+    case "SET_LFM_FIELD":
+      return { ...state, [action.field === "username" ? "lfmUsername" : "lfmApiKey"]: action.value };
+    case "LFM_VALIDATE_START":
+      return { ...state, lfmValidating: true, lfmError: "" };
+    case "LFM_VALIDATE_ERROR":
+      return { ...state, lfmValidating: false, lfmError: action.error };
+    case "LFM_VALIDATE_SUCCESS":
+      return { ...state, lfmValidating: false, lfmError: "", lfmUsername: "", lfmApiKey: "" };
+    case "SET_SFM_USERNAME":
+      return { ...state, sfmUsername: action.value };
+    case "SFM_VALIDATE_START":
+      return { ...state, sfmValidating: true, sfmError: "" };
+    case "SFM_VALIDATE_ERROR":
+      return { ...state, sfmValidating: false, sfmError: action.error };
+    case "SFM_VALIDATE_SUCCESS":
+      return { ...state, sfmValidating: false, sfmError: "", sfmUsername: "" };
+    default:
+      return state;
+  }
+}
+
+// --- Reducer: Display Preferences State ---
+
+interface DisplayPrefsState {
+  use24h: boolean;
+  itemCount: number;
+  genreCount: number;
+  hiddenSections: string[];
+}
+
+type DisplayPrefsAction =
+  | { type: "SET_USE_24H"; value: boolean }
+  | { type: "SET_ITEM_COUNT"; value: number }
+  | { type: "SET_GENRE_COUNT"; value: number }
+  | { type: "TOGGLE_SECTION"; sectionId: string }
+  | { type: "RESET_DISPLAY"; itemCount: number; genreCount: number };
+
+function displayPrefsReducer(state: DisplayPrefsState, action: DisplayPrefsAction): DisplayPrefsState {
+  switch (action.type) {
+    case "SET_USE_24H":
+      return { ...state, use24h: action.value };
+    case "SET_ITEM_COUNT":
+      return { ...state, itemCount: action.value };
+    case "SET_GENRE_COUNT":
+      return { ...state, genreCount: action.value };
+    case "TOGGLE_SECTION": {
+      const isHidden = state.hiddenSections.includes(action.sectionId);
+      return {
+        ...state,
+        hiddenSections: isHidden
+          ? state.hiddenSections.filter((s) => s !== action.sectionId)
+          : [...state.hiddenSections, action.sectionId],
+      };
+    }
+    case "RESET_DISPLAY":
+      return { ...state, hiddenSections: [], itemCount: action.itemCount, genreCount: action.genreCount };
+    default:
+      return state;
+  }
+}
+
+// --- Reducer: Advanced Toggles State ---
+
+interface AdvancedState {
+  loggingOn: boolean;
+  trackingPaused: boolean;
+  skipRepeats: boolean;
+  dedupRunning: boolean;
+}
+
+type AdvancedAction =
+  | { type: "SET_LOGGING"; value: boolean }
+  | { type: "SET_TRACKING_PAUSED"; value: boolean }
+  | { type: "SET_SKIP_REPEATS"; value: boolean }
+  | { type: "SET_DEDUP_RUNNING"; value: boolean };
+
+function advancedReducer(state: AdvancedState, action: AdvancedAction): AdvancedState {
+  switch (action.type) {
+    case "SET_LOGGING":
+      return { ...state, loggingOn: action.value };
+    case "SET_TRACKING_PAUSED":
+      return { ...state, trackingPaused: action.value };
+    case "SET_SKIP_REPEATS":
+      return { ...state, skipRepeats: action.value };
+    case "SET_DEDUP_RUNNING":
+      return { ...state, dedupRunning: action.value };
+    default:
+      return state;
+  }
+}
+
+// ---
 
 function SettingsCategory({
   title,
@@ -74,69 +207,100 @@ export function SettingsPanel({
   stats,
   period,
 }: SettingsPanelProps) {
+  const { Toggle } = Spicetify.ReactComponent;
   const currentProvider = getSelectedProviderType();
-  const [showProviderPicker, setShowProviderPicker] = useState(false);
-  const [lfmUsername, setLfmUsername] = useState("");
-  const [lfmApiKey, setLfmApiKey] = useState("");
-  const [lfmValidating, setLfmValidating] = useState(false);
-  const [lfmError, setLfmError] = useState("");
+
+  const [provForm, dispatchProv] = useReducer(providerFormReducer, {
+    showProviderPicker: false,
+    lfmUsername: "",
+    lfmApiKey: "",
+    lfmValidating: false,
+    lfmError: "",
+    sfmUsername: "",
+    sfmValidating: false,
+    sfmError: "",
+  });
+
+  const prefs = getPreferences();
+
+  const [display, dispatchDisplay] = useReducer(displayPrefsReducer, {
+    use24h: prefs.use24HourTime,
+    itemCount: prefs.itemsPerSection,
+    genreCount: prefs.genresPerSection,
+    hiddenSections: prefs.hiddenSections,
+  });
+
+  const [advanced, dispatchAdv] = useReducer(advancedReducer, {
+    loggingOn: isLoggingEnabled(),
+    trackingPaused: isTrackingPaused(),
+    skipRepeats: isSkipRepeatsEnabled(),
+    dedupRunning: false,
+  });
+
   const lfmConnected = LastFm.isConnected();
   const lfmConfig = LastFm.getConfig();
-
-  const [sfmUsername, setSfmUsername] = useState("");
-  const [sfmValidating, setSfmValidating] = useState(false);
-  const [sfmError, setSfmError] = useState("");
   const sfmConnected = Statsfm.isConnected();
   const sfmConfig = Statsfm.getConfig();
-  const [loggingOn, setLoggingOn] = useState(isLoggingEnabled());
-  const prefs = getPreferences();
-  const [use24h, setUse24h] = useState(prefs.use24HourTime);
-  const [itemCount, setItemCount] = useState(prefs.itemsPerSection);
-  const [genreCount, setGenreCount] = useState(prefs.genresPerSection);
-  const [hiddenSections, setHiddenSections] = useState<string[]>(prefs.hiddenSections);
 
   const switchProvider = (type: ProviderType) => {
     activateProvider(type);
-    setShowProviderPicker(false);
+    dispatchProv({ type: "CLOSE_PICKER" });
     onProviderChanged?.();
   };
 
+  const handleCleanDuplicates = async () => {
+    dispatchAdv({ type: "SET_DEDUP_RUNNING", value: true });
+    try {
+      const result = await deduplicateExistingEvents();
+      if (result.removed > 0) {
+        Spicetify.showNotification(
+          `Removed ${result.removed} duplicate entries across ${result.affectedTracks} tracks`
+        );
+      } else {
+        Spicetify.showNotification("No duplicates found");
+      }
+    } catch (err) {
+      error("Clean duplicates failed:", err);
+      Spicetify.showNotification("Failed to clean duplicates");
+    } finally {
+      dispatchAdv({ type: "SET_DEDUP_RUNNING", value: false });
+      clearStatsCache();
+      onRefresh();
+    }
+  };
+
   const handleLastfmSwitch = async () => {
-    if (!lfmUsername.trim() || !lfmApiKey.trim()) {
-      setLfmError("Both fields are required");
+    if (!provForm.lfmUsername.trim() || !provForm.lfmApiKey.trim()) {
+      dispatchProv({ type: "LFM_VALIDATE_ERROR", error: "Both fields are required" });
       return;
     }
-    setLfmValidating(true);
-    setLfmError("");
+    dispatchProv({ type: "LFM_VALIDATE_START" });
     try {
       const info = await LastFm.validateUser(
-        lfmUsername.trim(),
-        lfmApiKey.trim(),
+        provForm.lfmUsername.trim(),
+        provForm.lfmApiKey.trim(),
       );
-      LastFm.saveConfig({ username: info.username, apiKey: lfmApiKey.trim() });
+      LastFm.saveConfig({ username: info.username, apiKey: provForm.lfmApiKey.trim() });
+      dispatchProv({ type: "LFM_VALIDATE_SUCCESS" });
       switchProvider("lastfm");
     } catch (err: any) {
-      setLfmError(err.message || "Connection failed");
-    } finally {
-      setLfmValidating(false);
+      dispatchProv({ type: "LFM_VALIDATE_ERROR", error: err.message || "Connection failed" });
     }
   };
 
   const handleStatsfmSwitch = async () => {
-    if (!sfmUsername.trim()) {
-      setSfmError("Username is required");
+    if (!provForm.sfmUsername.trim()) {
+      dispatchProv({ type: "SFM_VALIDATE_ERROR", error: "Username is required" });
       return;
     }
-    setSfmValidating(true);
-    setSfmError("");
+    dispatchProv({ type: "SFM_VALIDATE_START" });
     try {
-      const info = await Statsfm.validateUser(sfmUsername.trim());
+      const info = await Statsfm.validateUser(provForm.sfmUsername.trim());
       Statsfm.saveConfig({ username: info.customId, isPlus: info.isPlus });
+      dispatchProv({ type: "SFM_VALIDATE_SUCCESS" });
       switchProvider("statsfm");
     } catch (err: any) {
-      setSfmError(err.message || "Connection failed");
-    } finally {
-      setSfmValidating(false);
+      dispatchProv({ type: "SFM_VALIDATE_ERROR", error: err.message || "Connection failed" });
     }
   };
 
@@ -178,13 +342,13 @@ export function SettingsPanel({
           </span>
           <button
             className="footer-btn"
-            onClick={() => setShowProviderPicker(!showProviderPicker)}
+            onClick={() => dispatchProv({ type: "TOGGLE_PICKER" })}
           >
             Change
           </button>
         </div>
 
-        {!showProviderPicker && (
+        {!provForm.showProviderPicker && (
           <div className="provider-guides-row">
             {currentProvider !== "statsfm" && !sfmConnected && (
               <a
@@ -211,7 +375,7 @@ export function SettingsPanel({
           </div>
         )}
 
-        {showProviderPicker && (
+        {provForm.showProviderPicker && (
           <div className="settings-provider-picker">
             {sfmConnected || currentProvider === "statsfm" ? (
               <div
@@ -241,17 +405,17 @@ export function SettingsPanel({
                     className="lastfm-input"
                     type="text"
                     placeholder="stats.fm username"
-                    value={sfmUsername}
-                    onChange={(e: any) => setSfmUsername(e.target.value)}
-                    disabled={sfmValidating}
+                    value={provForm.sfmUsername}
+                    onChange={(e: any) => dispatchProv({ type: "SET_SFM_USERNAME", value: e.target.value })}
+                    disabled={provForm.sfmValidating}
                   />
-                  {sfmError && <div className="lastfm-error">{sfmError}</div>}
+                  {provForm.sfmError && <div className="lastfm-error">{provForm.sfmError}</div>}
                   <button
                     className="footer-btn primary"
                     onClick={handleStatsfmSwitch}
-                    disabled={sfmValidating}
+                    disabled={provForm.sfmValidating}
                   >
-                    {sfmValidating ? "Connecting..." : "Connect & Switch"}
+                    {provForm.sfmValidating ? "Connecting..." : "Connect & Switch"}
                   </button>
                 </div>
                 <a
@@ -293,25 +457,25 @@ export function SettingsPanel({
                     className="lastfm-input"
                     type="text"
                     placeholder="Username"
-                    value={lfmUsername}
-                    onChange={(e: any) => setLfmUsername(e.target.value)}
-                    disabled={lfmValidating}
+                    value={provForm.lfmUsername}
+                    onChange={(e: any) => dispatchProv({ type: "SET_LFM_FIELD", field: "username", value: e.target.value })}
+                    disabled={provForm.lfmValidating}
                   />
                   <input
                     className="lastfm-input"
                     type="text"
                     placeholder="API key"
-                    value={lfmApiKey}
-                    onChange={(e: any) => setLfmApiKey(e.target.value)}
-                    disabled={lfmValidating}
+                    value={provForm.lfmApiKey}
+                    onChange={(e: any) => dispatchProv({ type: "SET_LFM_FIELD", field: "apiKey", value: e.target.value })}
+                    disabled={provForm.lfmValidating}
                   />
-                  {lfmError && <div className="lastfm-error">{lfmError}</div>}
+                  {provForm.lfmError && <div className="lastfm-error">{provForm.lfmError}</div>}
                   <button
                     className="footer-btn primary"
                     onClick={handleLastfmSwitch}
-                    disabled={lfmValidating}
+                    disabled={provForm.lfmValidating}
                   >
-                    {lfmValidating ? "Connecting..." : "Connect & Switch"}
+                    {provForm.lfmValidating ? "Connecting..." : "Connect & Switch"}
                   </button>
                 </div>
                 <a
@@ -397,16 +561,13 @@ export function SettingsPanel({
               Show times as 14:00 instead of 2pm
             </p>
           </div>
-          <button
-            className={`settings-toggle ${use24h ? "active" : ""}`}
-            onClick={() => {
-              const next = !use24h;
+          <Toggle
+            value={display.use24h}
+            onSelected={(next: boolean) => {
               setPreference("use24HourTime", next);
-              setUse24h(next);
+              dispatchDisplay({ type: "SET_USE_24H", value: next });
             }}
-          >
-            <span className="settings-toggle-knob" />
-          </button>
+          />
         </div>
 
         <div className="settings-toggle-row">
@@ -420,10 +581,10 @@ export function SettingsPanel({
             {[3, 5, 10].map((n) => (
               <button
                 key={n}
-                className={`settings-count-btn ${itemCount === n ? "active" : ""}`}
+                className={`settings-count-btn ${display.itemCount === n ? "active" : ""}`}
                 onClick={() => {
                   setPreference("itemsPerSection", n);
-                  setItemCount(n);
+                  dispatchDisplay({ type: "SET_ITEM_COUNT", value: n });
                 }}
               >
                 {n}
@@ -443,10 +604,10 @@ export function SettingsPanel({
             {[3, 5, 10].map((n) => (
               <button
                 key={n}
-                className={`settings-count-btn ${genreCount === n ? "active" : ""}`}
+                className={`settings-count-btn ${display.genreCount === n ? "active" : ""}`}
                 onClick={() => {
                   setPreference("genresPerSection", n);
-                  setGenreCount(n);
+                  dispatchDisplay({ type: "SET_GENRE_COUNT", value: n });
                 }}
               >
                 {n}
@@ -467,22 +628,20 @@ export function SettingsPanel({
             { id: "activity", label: "Activity Chart" },
             { id: "recent", label: "Recently Played" },
           ].map(({ id, label }) => {
-            const isHidden = hiddenSections.includes(id);
+            const isHidden = display.hiddenSections.includes(id);
             return (
               <div key={id} className="settings-toggle-row compact">
                 <span className="settings-vis-label">{label}</span>
-                <button
-                  className={`settings-toggle ${!isHidden ? "active" : ""}`}
-                  onClick={() => {
-                    const next = isHidden
-                      ? hiddenSections.filter((s) => s !== id)
-                      : [...hiddenSections, id];
-                    setPreference("hiddenSections", next);
-                    setHiddenSections(next);
+                <Toggle
+                  value={!isHidden}
+                  onSelected={() => {
+                    const newHidden = display.hiddenSections.includes(id)
+                      ? display.hiddenSections.filter((s) => s !== id)
+                      : [...display.hiddenSections, id];
+                    setPreference("hiddenSections", newHidden);
+                    dispatchDisplay({ type: "TOGGLE_SECTION", sectionId: id });
                   }}
-                >
-                  <span className="settings-toggle-knob" />
-                </button>
+                />
               </div>
             );
           })}
@@ -502,14 +661,12 @@ export function SettingsPanel({
             className="footer-btn"
             onClick={() => {
               window.dispatchEvent(
-                new CustomEvent("listening-stats:reset-layout"),
+                new CustomEvent(EVENTS.RESET_LAYOUT),
               );
               setPreference("hiddenSections", []);
-              setHiddenSections([]);
               setPreference("itemsPerSection", 5);
-              setItemCount(5);
               setPreference("genresPerSection", 5);
-              setGenreCount(5);
+              dispatchDisplay({ type: "RESET_DISPLAY", itemCount: 5, genreCount: 5 });
               Spicetify.showNotification("Layout reset to default");
             }}
           >
@@ -528,7 +685,7 @@ export function SettingsPanel({
             onClick={() => {
               onClose?.();
               setTimeout(() => {
-                window.dispatchEvent(new CustomEvent('listening-stats:start-tour'));
+                window.dispatchEvent(new CustomEvent(EVENTS.START_TOUR));
               }, 300);
             }}
           >
@@ -537,9 +694,10 @@ export function SettingsPanel({
         </div>
       </SettingsCategory>
 
+
       {/* --- Advanced --- */}
       <SettingsCategory title="Advanced">
-        {/* Diagnostics sub-section */}
+        {/* Toggles grouped together */}
         <div className="settings-toggle-row">
           <div className="settings-toggle-info">
             <h4 className="settings-section-title">Console Logging</h4>
@@ -548,23 +706,59 @@ export function SettingsPanel({
               console (F12).
             </p>
           </div>
-          <button
-            className={`settings-toggle ${loggingOn ? "active" : ""}`}
-            onClick={() => {
-              const next = !loggingOn;
+          <Toggle
+            value={advanced.loggingOn}
+            onSelected={(next: boolean) => {
               setLoggingEnabled(next);
-              setLoggingOn(next);
+              dispatchAdv({ type: "SET_LOGGING", value: next });
               Spicetify.showNotification(
                 next
                   ? "Logging enabled. Open DevTools (Ctrl + Shift + I) to see output"
                   : "Logging disabled",
               );
             }}
-          >
-            <span className="settings-toggle-knob" />
-          </button>
+          />
         </div>
 
+        {currentProvider === "local" && (
+          <>
+            <div className="settings-toggle-row">
+              <div className="settings-toggle-info">
+                <h4 className="settings-section-title">Pause Tracking</h4>
+                <p className="settings-toggle-desc">
+                  Stop recording plays. Resume to start tracking again from this point.
+                </p>
+              </div>
+              <Toggle
+                value={advanced.trackingPaused}
+                onSelected={(next: boolean) => {
+                  setTrackingPaused(next);
+                  if (!next) resetAccumulator();
+                  dispatchAdv({ type: "SET_TRACKING_PAUSED", value: next });
+                  Spicetify.showNotification(next ? "Tracking paused" : "Tracking resumed");
+                }}
+              />
+            </div>
+
+            <div className="settings-toggle-row">
+              <div className="settings-toggle-info">
+                <h4 className="settings-section-title">Skip Repeats</h4>
+                <p className="settings-toggle-desc">
+                  Don't record the same song twice in a row.
+                </p>
+              </div>
+              <Toggle
+                value={advanced.skipRepeats}
+                onSelected={(next: boolean) => {
+                  setSkipRepeatsEnabled(next);
+                  dispatchAdv({ type: "SET_SKIP_REPEATS", value: next });
+                }}
+              />
+            </div>
+          </>
+        )}
+
+        {/* Buttons grouped together */}
         <div className="settings-actions-row">
           <button
             className="footer-btn"
@@ -591,6 +785,15 @@ export function SettingsPanel({
           <button className="footer-btn" onClick={onCheckUpdates}>
             Check Updates
           </button>
+          {currentProvider === "local" && (
+            <button
+              className="footer-btn"
+              onClick={handleCleanDuplicates}
+              disabled={advanced.dedupRunning}
+            >
+              {advanced.dedupRunning ? "Cleaning..." : "Clean Duplicates"}
+            </button>
+          )}
         </div>
 
         {/* Export sub-section */}
@@ -685,21 +888,7 @@ export function SettingsPanel({
                 Statsfm.clearConfig();
                 Statsfm.clearStatsfmCache();
                 clearProviderSelection();
-                try {
-                  localStorage.removeItem(
-                    "listening-stats:sfm-promo-dismissed",
-                  );
-                  localStorage.removeItem("listening-stats:lastUpdateCheck");
-                  localStorage.removeItem("listening-stats:lastUpdate");
-                  localStorage.removeItem("listening-stats:searchCache");
-                  localStorage.removeItem("listening-stats:logging");
-                  localStorage.removeItem("listening-stats:preferences");
-                  localStorage.removeItem("listening-stats:tour-seen");
-                  localStorage.removeItem("listening-stats:tour-version");
-                  localStorage.removeItem("listening-stats:card-order");
-                } catch {
-                  /* ignore */
-                }
+                clearAllLocalStorage();
                 onReset?.();
               }
             }}

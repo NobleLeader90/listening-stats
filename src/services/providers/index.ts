@@ -3,29 +3,28 @@ import type { TrackingProvider } from "./types";
 import { createLastfmProvider } from "./lastfm";
 import { createLocalProvider } from "./local";
 import { createStatsfmProvider } from "./statsfm";
-
-const STORAGE_KEY = "listening-stats:provider";
+import { LS_KEYS } from "../../constants";
 
 let activeProvider: TrackingProvider | null = null;
 
 export function getSelectedProviderType(): ProviderType | null {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(LS_KEYS.PROVIDER);
     if (stored === "local" || stored === "lastfm" || stored === "statsfm") {
       return stored;
     }
-  } catch {
-    /* ignore */
+  } catch (e) {
+    console.warn("[listening-stats] Provider selection read failed", e);
   }
   return null;
 }
 
 export function setSelectedProviderType(type: ProviderType): void {
-  localStorage.setItem(STORAGE_KEY, type);
+  localStorage.setItem(LS_KEYS.PROVIDER, type);
 }
 
 export function hasExistingData(): boolean {
-  return localStorage.getItem("listening-stats:pollingData") !== null;
+  return localStorage.getItem(LS_KEYS.POLLING_DATA) !== null;
 }
 
 export function clearProviderSelection(): void {
@@ -33,7 +32,7 @@ export function clearProviderSelection(): void {
     activeProvider.destroy();
     activeProvider = null;
   }
-  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(LS_KEYS.PROVIDER);
 }
 
 export function getActiveProvider(): TrackingProvider | null {

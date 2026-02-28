@@ -2,6 +2,7 @@ import { ListeningStats, RecentTrack } from "../../types/listeningstats";
 import * as LastFm from "../lastfm";
 import { destroyPoller, getPollingData, initPoller } from "../tracker";
 import type { TrackingProvider } from "./types";
+import { calculateStreak } from "../../utils/streak";
 
 const PERIODS = [
   "recent",
@@ -335,19 +336,3 @@ async function calculateRankedStats(period: string): Promise<ListeningStats> {
   };
 }
 
-function calculateStreak(activityDates: string[]): number {
-  const dateSet = new Set(activityDates);
-  const today = new Date();
-  let streak = 0;
-  for (let i = 0; i < 365; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
-    const key = d.toISOString().split("T")[0];
-    if (dateSet.has(key)) {
-      streak++;
-    } else if (i > 0) {
-      break;
-    }
-  }
-  return streak;
-}

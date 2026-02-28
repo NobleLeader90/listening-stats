@@ -1,7 +1,7 @@
 import { StatsfmConfig } from "../types/listeningstats";
+import { LS_KEYS } from "../constants";
 
 const API_BASE = "https://api.stats.fm/api/v1";
-const STORAGE_KEY = "listening-stats:statsfm";
 const CACHE_TTL_MS = 120000;
 
 let configCache: StatsfmConfig | null | undefined = undefined;
@@ -9,13 +9,13 @@ let configCache: StatsfmConfig | null | undefined = undefined;
 export function getConfig(): StatsfmConfig | null {
   if (configCache !== undefined) return configCache;
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(LS_KEYS.STATSFM_CONFIG);
     if (stored) {
       configCache = JSON.parse(stored);
       return configCache!;
     }
-  } catch {
-    /* ignore */
+  } catch (e) {
+    console.warn("[listening-stats] stats.fm config read failed", e);
   }
   configCache = null;
   return null;
@@ -23,12 +23,12 @@ export function getConfig(): StatsfmConfig | null {
 
 export function saveConfig(config: StatsfmConfig): void {
   configCache = config;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  localStorage.setItem(LS_KEYS.STATSFM_CONFIG, JSON.stringify(config));
 }
 
 export function clearConfig(): void {
   configCache = null;
-  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(LS_KEYS.STATSFM_CONFIG);
 }
 
 export function isConnected(): boolean {
@@ -209,8 +209,9 @@ export async function getTopAlbums(
       `/users/${getUsername()}/top/albums?range=${range}&limit=${limit}&orderBy=COUNT`,
     );
     return data.items || [];
-  } catch {
-    // Top albums endpoint returns 400 for non-Plus users
+  } catch (e) {
+    // Top albums endpoint returns 400 for non-Plus users -- expected for free tier
+    console.warn("[listening-stats] stats.fm API call failed", e);
     return [];
   }
 }
@@ -271,8 +272,9 @@ export async function refreshPlusStatus(): Promise<boolean> {
       saveConfig({ ...config, isPlus: info.isPlus });
       return true; // tier changed
     }
-  } catch {
-    // Silently ignore -- keep existing tier assumption
+  } catch (e) {
+    // Keep existing tier assumption if network call fails
+    console.warn("[listening-stats] stats.fm date parsing failed", e);
   }
   return false;
 }

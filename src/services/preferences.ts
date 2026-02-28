@@ -1,5 +1,4 @@
-const PREFS_KEY = "listening-stats:preferences";
-const PREFS_CHANGED_EVENT = "listening-stats:prefs-changed";
+import { LS_KEYS, EVENTS } from "../constants";
 
 export interface UserPreferences {
   use24HourTime: boolean;
@@ -20,13 +19,13 @@ let cached: UserPreferences | null = null;
 export function getPreferences(): UserPreferences {
   if (cached) return cached;
   try {
-    const stored = localStorage.getItem(PREFS_KEY);
+    const stored = localStorage.getItem(LS_KEYS.PREFERENCES);
     if (stored) {
       cached = { ...DEFAULTS, ...JSON.parse(stored) };
       return cached!;
     }
-  } catch {
-    /* ignore parse errors */
+  } catch (e) {
+    console.warn("[listening-stats] Preferences read failed", e);
   }
   cached = { ...DEFAULTS };
   return cached;
@@ -40,12 +39,12 @@ export function setPreference<K extends keyof UserPreferences>(
   prefs[key] = value;
   cached = prefs;
   try {
-    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
-  } catch {
-    /* ignore quota errors */
+    localStorage.setItem(LS_KEYS.PREFERENCES, JSON.stringify(prefs));
+  } catch (e) {
+    console.warn("[listening-stats] Preferences write failed", e);
   }
   window.dispatchEvent(
-    new CustomEvent(PREFS_CHANGED_EVENT, { detail: { key, value } }),
+    new CustomEvent(EVENTS.PREFS_CHANGED, { detail: { key, value } }),
   );
 }
 
@@ -56,6 +55,6 @@ export function onPreferencesChanged(
     const { key, value } = (e as CustomEvent).detail;
     callback(key, value);
   };
-  window.addEventListener(PREFS_CHANGED_EVENT, handler);
-  return () => window.removeEventListener(PREFS_CHANGED_EVENT, handler);
+  window.addEventListener(EVENTS.PREFS_CHANGED, handler);
+  return () => window.removeEventListener(EVENTS.PREFS_CHANGED, handler);
 }

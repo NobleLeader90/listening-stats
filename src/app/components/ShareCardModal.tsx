@@ -1,5 +1,6 @@
 import type { ListeningStats, ProviderType } from "../../types/listeningstats";
 import { generateShareCard, shareOrDownload } from "../../services/share-card";
+import { error } from "../../services/logger";
 import { Icons } from "../icons";
 
 const { useState, useRef, useEffect } = Spicetify.React;
@@ -39,7 +40,7 @@ export function ShareCardModal({
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       setPreviewUrl(URL.createObjectURL(blob));
     } catch (e) {
-      console.error("[ListeningStats] Failed to generate share card:", e);
+      error(" Failed to generate share card:", e);
     }
     setGenerating(false);
   }

@@ -4,8 +4,8 @@ import {
   createBatchCoalescer,
   ApiError,
 } from "./api-resilience";
-
-const STORAGE_PREFIX = "listening-stats:";
+import { warn } from "./logger";
+import { LS_KEYS } from "../constants";
 const QUEUE_DELAY_MS = 300;
 const MAX_BATCH = 50;
 const CACHE_TTL_MS = 300000;
@@ -15,16 +15,16 @@ const MAX_BACKOFF_MS = 600000;
 let rateLimitedUntil = 0;
 
 try {
-  const stored = localStorage.getItem(`${STORAGE_PREFIX}rateLimitedUntil`);
+  const stored = localStorage.getItem(`${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`);
   if (stored) {
     const val = parseInt(stored, 10);
     rateLimitedUntil = Date.now() >= val ? 0 : val;
     if (rateLimitedUntil === 0) {
-      localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
+      localStorage.removeItem(`${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`);
     }
   }
-} catch {
-  /* ignore */
+} catch (e) {
+  console.warn("[listening-stats] API cache read failed", e);
 }
 
 export function isApiAvailable(): boolean {
@@ -38,7 +38,7 @@ export function getRateLimitRemaining(): number {
 
 export function resetRateLimit(): void {
   rateLimitedUntil = 0;
-  localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
+  localStorage.removeItem(`${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`);
   circuitBreaker.reset();
 }
 
@@ -59,7 +59,7 @@ function setRateLimit(error: any): void {
 
   rateLimitedUntil = Date.now() + backoffMs;
   localStorage.setItem(
-    `${STORAGE_PREFIX}rateLimitedUntil`,
+    `${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`,
     rateLimitedUntil.toString(),
   );
 }
@@ -225,20 +225,19 @@ export interface SpotifySearchResult {
   imageUrl?: string;
 }
 
-const SEARCH_CACHE_KEY = "listening-stats:searchCache";
 const SEARCH_CACHE_MAX = 500;
 const searchCache = new Map<string, SpotifySearchResult>();
 
 try {
-  const stored = localStorage.getItem(SEARCH_CACHE_KEY);
+  const stored = localStorage.getItem(LS_KEYS.SEARCH_CACHE);
   if (stored) {
     const parsed = JSON.parse(stored);
     for (const [k, v] of Object.entries(parsed)) {
       searchCache.set(k, v as SpotifySearchResult);
     }
   }
-} catch {
-  /* ignore */
+} catch (e) {
+  console.warn("[listening-stats] Search cache read failed", e);
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -256,9 +255,9 @@ function schedulePersistSearchCache(): void {
           if (++count >= SEARCH_CACHE_MAX) break;
         }
       }
-      localStorage.setItem(SEARCH_CACHE_KEY, JSON.stringify(obj));
-    } catch {
-      /* storage full */
+      localStorage.setItem(LS_KEYS.SEARCH_CACHE, JSON.stringify(obj));
+    } catch (e) {
+      console.warn("[listening-stats] Search cache write failed", e);
     }
   }, 2000);
 }
@@ -302,7 +301,8 @@ async function throttledSearch(
       schedulePersistSearchCache();
     }
     return result;
-  } catch {
+  } catch (e) {
+    console.warn("[listening-stats] API request failed", e);
     return {};
   } finally {
     releaseSearchSlot();
@@ -386,7 +386,7 @@ export async function getArtistsBatch(
         results.push(...response.artists.filter(Boolean));
       }
     } catch (error) {
-      console.warn("[ListeningStats] Artist batch fetch failed:", error);
+      warn(" Artist batch fetch failed:", error);
     }
   }
 
@@ -408,7 +408,7 @@ const artistCoalescer = createBatchCoalescer<string, Spotify.Artist>(
           }
         }
       } catch (error) {
-        console.warn("[ListeningStats] Artist batch fetch failed:", error);
+        warn(" Artist batch fetch failed:", error);
       }
     }
     return results;

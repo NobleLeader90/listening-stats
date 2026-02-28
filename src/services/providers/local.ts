@@ -3,13 +3,15 @@ import {
   PlayEvent,
   RecentTrack,
 } from "../../types/listeningstats";
+import { calculateStreak } from "../../utils/streak";
+import { getArtistsBatch } from "../spotify-api";
 import {
-  getPlayEventsByTimeRange,
-  getAllPlayEvents,
   clearAllData,
+  getAllPlayEvents,
+  getPlayEventsByTimeRange,
   resetDBPromise,
 } from "../storage";
-import { initPoller, destroyPoller } from "../tracker";
+import { destroyPoller, initPoller } from "../tracker";
 import type { TrackingProvider } from "./types";
 
 const PERIODS = ["today", "this_week", "this_month", "all_time"] as const;
@@ -40,8 +42,9 @@ export function createLocalProvider(): TrackingProvider {
 
     async calculateStats(period: string): Promise<ListeningStats> {
       const events = await getEventsForPeriod(period);
-      // Streak is an all-time metric — fetch all events for it when not already all_time
-      const allEvents = period === "all_time" ? events : await getAllPlayEvents();
+      // Streak is an all-time metric, fetch all events for it when not already all_time
+      const allEvents =
+        period === "all_time" ? events : await getAllPlayEvents();
       return aggregateEvents(events, allEvents);
     },
 
@@ -88,11 +91,14 @@ async function getEventsForPeriod(period: string): Promise<PlayEvent[]> {
   return getPlayEventsByTimeRange(start, end);
 }
 
-async function aggregateEvents(events: PlayEvent[], allEvents: PlayEvent[]): Promise<ListeningStats> {
-  // Separate completed plays from skips — rankings use only completed plays
-  const completedEvents = events.filter(e => e.type !== "skip");
+async function aggregateEvents(
+  events: PlayEvent[],
+  allEvents: PlayEvent[],
+): Promise<ListeningStats> {
+  // Separate completed plays from skips, rankings use only completed plays
+  const completedEvents = events.filter((e) => e.type !== "skip");
 
-  // Top tracks by play count (completed plays only)
+  // Top tracks by listen time (completed plays only)
   const trackMap = new Map<
     string,
     {
@@ -102,6 +108,7 @@ async function aggregateEvents(events: PlayEvent[], allEvents: PlayEvent[]): Pro
       albumArt?: string;
       count: number;
       totalMs: number;
+      lastPlayedAt: number;
     }
   >();
   for (const e of completedEvents) {
@@ -109,6 +116,8 @@ async function aggregateEvents(events: PlayEvent[], allEvents: PlayEvent[]): Pro
     if (existing) {
       existing.count++;
       existing.totalMs += e.playedMs;
+      if (e.startedAt > existing.lastPlayedAt)
+        existing.lastPlayedAt = e.startedAt;
     } else {
       trackMap.set(e.trackUri, {
         trackUri: e.trackUri,
@@ -117,11 +126,18 @@ async function aggregateEvents(events: PlayEvent[], allEvents: PlayEvent[]): Pro
         albumArt: e.albumArt,
         count: 1,
         totalMs: e.playedMs,
+        lastPlayedAt: e.startedAt,
       });
     }
   }
   const topTracks = Array.from(trackMap.values())
-    .sort((a, b) => b.count - a.count)
+    .sort((a, b) => {
+      if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
+      if (b.count !== a.count) return b.count - a.count;
+      if (b.lastPlayedAt !== a.lastPlayedAt)
+        return b.lastPlayedAt - a.lastPlayedAt;
+      return a.trackUri.localeCompare(b.trackUri);
+    })
     .slice(0, 10)
     .map((t, i) => ({
       trackUri: t.trackUri,
@@ -133,13 +149,15 @@ async function aggregateEvents(events: PlayEvent[], allEvents: PlayEvent[]): Pro
       playCount: t.count,
     }));
 
-  // Top artists by play count (completed plays only)
+  // Top artists by listen time (completed plays only)
   const artistMap = new Map<
     string,
     {
       artistUri: string;
       artistName: string;
       count: number;
+      totalMs: number;
+      lastPlayedAt: number;
     }
   >();
   for (const e of completedEvents) {
@@ -147,27 +165,65 @@ async function aggregateEvents(events: PlayEvent[], allEvents: PlayEvent[]): Pro
     const existing = artistMap.get(key);
     if (existing) {
       existing.count++;
+      existing.totalMs += e.playedMs;
+      if (e.startedAt > existing.lastPlayedAt)
+        existing.lastPlayedAt = e.startedAt;
     } else {
       artistMap.set(key, {
         artistUri: e.artistUri,
         artistName: e.artistName,
         count: 1,
+        totalMs: e.playedMs,
+        lastPlayedAt: e.startedAt,
       });
     }
   }
   const topArtistAggregated = Array.from(artistMap.values())
-    .sort((a, b) => b.count - a.count)
+    .sort((a, b) => {
+      if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
+      if (b.count !== a.count) return b.count - a.count;
+      if (b.lastPlayedAt !== a.lastPlayedAt)
+        return b.lastPlayedAt - a.lastPlayedAt;
+      const aKey = a.artistUri || a.artistName;
+      const bKey = b.artistUri || b.artistName;
+      return aKey.localeCompare(bKey);
+    })
     .slice(0, 10);
 
   const topArtists = topArtistAggregated.map((a, i) => ({
     artistUri: a.artistUri,
     artistName: a.artistName,
+    artistImage: undefined as string | undefined,
     rank: i + 1,
     genres: [] as string[],
     playCount: a.count,
   }));
 
-  // Top albums (completed plays only)
+  // Enrich top artists with images from Spotify API
+  const artistIds = topArtists
+    .map((a) => Spicetify.URI.from(a.artistUri)?.id)
+    .filter((id): id is string => !!id);
+  if (artistIds.length > 0) {
+    try {
+      const artists = await getArtistsBatch(artistIds);
+      const imageMap = new Map<string, string>();
+      for (const artist of artists) {
+        if (artist.id && artist.images?.[0]?.url) {
+          imageMap.set(artist.id, artist.images[0].url);
+        }
+      }
+      for (const a of topArtists) {
+        const id = Spicetify.URI.from(a.artistUri)?.id;
+        if (id && imageMap.has(id)) {
+          a.artistImage = imageMap.get(id);
+        }
+      }
+    } catch (e) {
+      console.warn("[listening-stats] Artist enrichment failed:", e);
+    }
+  }
+
+  // Top albums by listen time (completed plays only)
   const albumMap = new Map<
     string,
     {
@@ -176,12 +232,17 @@ async function aggregateEvents(events: PlayEvent[], allEvents: PlayEvent[]): Pro
       artistName: string;
       albumArt?: string;
       trackCount: number;
+      totalMs: number;
+      lastPlayedAt: number;
     }
   >();
   for (const e of completedEvents) {
     const existing = albumMap.get(e.albumUri);
     if (existing) {
       existing.trackCount++;
+      existing.totalMs += e.playedMs;
+      if (e.startedAt > existing.lastPlayedAt)
+        existing.lastPlayedAt = e.startedAt;
     } else {
       albumMap.set(e.albumUri, {
         albumUri: e.albumUri,
@@ -189,11 +250,19 @@ async function aggregateEvents(events: PlayEvent[], allEvents: PlayEvent[]): Pro
         artistName: e.artistName,
         albumArt: e.albumArt,
         trackCount: 1,
+        totalMs: e.playedMs,
+        lastPlayedAt: e.startedAt,
       });
     }
   }
   const topAlbums = Array.from(albumMap.values())
-    .sort((a, b) => b.trackCount - a.trackCount)
+    .sort((a, b) => {
+      if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
+      if (b.trackCount !== a.trackCount) return b.trackCount - a.trackCount;
+      if (b.lastPlayedAt !== a.lastPlayedAt)
+        return b.lastPlayedAt - a.lastPlayedAt;
+      return a.albumUri.localeCompare(b.albumUri);
+    })
     .slice(0, 10)
     .map((a) => ({
       ...a,
@@ -247,9 +316,11 @@ async function aggregateEvents(events: PlayEvent[], allEvents: PlayEvent[]): Pro
   );
 
   // Streak: consecutive days from today using ALL events (cross-period metric)
-  const allDates = Array.from(new Set(
-    allEvents.map((e) => new Date(e.startedAt).toISOString().split("T")[0]),
-  ));
+  const allDates = Array.from(
+    new Set(
+      allEvents.map((e) => new Date(e.startedAt).toISOString().split("T")[0]),
+    ),
+  );
 
   const totalTimeMs = events.reduce((sum, e) => sum + e.playedMs, 0);
 
@@ -275,21 +346,4 @@ async function aggregateEvents(events: PlayEvent[], allEvents: PlayEvent[]): Pro
     listenedDays: periodDates.size,
     lastfmConnected: false,
   };
-}
-
-function calculateStreak(activityDates: string[]): number {
-  const dateSet = new Set(activityDates);
-  const today = new Date();
-  let streak = 0;
-  for (let i = 0; i < 365; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
-    const key = d.toISOString().split("T")[0];
-    if (dateSet.has(key)) {
-      streak++;
-    } else if (i > 0) {
-      break;
-    }
-  }
-  return streak;
 }
