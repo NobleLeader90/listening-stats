@@ -1,25 +1,65 @@
 (() => {
+  // src/constants.ts
+  var LS_KEYS = {
+    /** Prefix used for dynamic key construction (e.g. rateLimitedUntil) */
+    STORAGE_PREFIX: "listening-stats:",
+    // Provider & tracking
+    PROVIDER: "listening-stats:provider",
+    POLLING_DATA: "listening-stats:pollingData",
+    PLAY_THRESHOLD: "listening-stats:playThreshold",
+    TRACKING_PAUSED: "listening-stats:tracking-paused",
+    SKIP_REPEATS: "listening-stats:skip-repeats",
+    LAST_UPDATE: "listening-stats:lastUpdate",
+    // Logging
+    LOGGING: "listening-stats:logging",
+    // User preferences
+    PREFERENCES: "listening-stats:preferences",
+    // External provider configs
+    LASTFM_CONFIG: "listening-stats:lastfm",
+    STATSFM_CONFIG: "listening-stats:statsfm",
+    // Updater
+    LAST_UPDATE_CHECK: "listening-stats:lastUpdateCheck",
+    // API cache
+    SEARCH_CACHE: "listening-stats:searchCache",
+    // One-time migration flags
+    DEDUP_V2_DONE: "listening-stats:dedup-v2-done",
+    MIGRATION_BACKUP: "listening-stats:migration-backup",
+    MIGRATION_VERSION: "listening-stats:migration-version",
+    // UI state
+    SFM_PROMO_DISMISSED: "listening-stats:sfm-promo-dismissed",
+    TOUR_SEEN: "listening-stats:tour-seen",
+    TOUR_VERSION: "listening-stats:tour-version",
+    CARD_ORDER: "listening-stats:card-order",
+    PERIOD: "listening-stats:period"
+  };
+  var EVENTS = {
+    STATS_UPDATED: "listening-stats:updated",
+    PREFS_CHANGED: "listening-stats:prefs-changed",
+    RESET_LAYOUT: "listening-stats:reset-layout",
+    START_TOUR: "listening-stats:start-tour"
+  };
+
   // src/services/lastfm.ts
   var LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/";
-  var STORAGE_KEY = "listening-stats:lastfm";
   var CACHE_TTL_MS = 3e5;
   var configCache = void 0;
   function getConfig() {
     if (configCache !== void 0) return configCache;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(LS_KEYS.LASTFM_CONFIG);
       if (stored) {
         configCache = JSON.parse(stored);
         return configCache;
       }
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] Last.fm config read failed", e);
     }
     configCache = null;
     return null;
   }
   function clearConfig() {
     configCache = null;
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(LS_KEYS.LASTFM_CONFIG);
   }
   var cache = /* @__PURE__ */ new Map();
   function getCached(key) {
@@ -184,9 +224,29 @@
     if (!config) return null;
     try {
       return await validateUser(config.username, config.apiKey);
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] Last.fm date parsing failed", e);
       return null;
     }
+  }
+
+  // src/services/logger.ts
+  function isLoggingEnabled() {
+    try {
+      return localStorage.getItem(LS_KEYS.LOGGING) === "1";
+    } catch (e) {
+      console.warn("[listening-stats] Logger config access failed", e);
+      return false;
+    }
+  }
+  function log(...args) {
+    if (isLoggingEnabled()) console.log("[ListeningStats]", ...args);
+  }
+  function warn(...args) {
+    if (isLoggingEnabled()) console.warn("[ListeningStats]", ...args);
+  }
+  function error(...args) {
+    if (isLoggingEnabled()) console.error("[ListeningStats]", ...args);
   }
 
   // node_modules/idb/build/index.js
@@ -216,18 +276,18 @@
     const promise = new Promise((resolve, reject) => {
       const unlisten = () => {
         request.removeEventListener("success", success);
-        request.removeEventListener("error", error);
+        request.removeEventListener("error", error2);
       };
       const success = () => {
         resolve(wrap(request.result));
         unlisten();
       };
-      const error = () => {
+      const error2 = () => {
         reject(request.error);
         unlisten();
       };
       request.addEventListener("success", success);
-      request.addEventListener("error", error);
+      request.addEventListener("error", error2);
     });
     reverseTransformCache.set(promise, request);
     return promise;
@@ -238,20 +298,20 @@
     const done = new Promise((resolve, reject) => {
       const unlisten = () => {
         tx.removeEventListener("complete", complete);
-        tx.removeEventListener("error", error);
-        tx.removeEventListener("abort", error);
+        tx.removeEventListener("error", error2);
+        tx.removeEventListener("abort", error2);
       };
       const complete = () => {
         resolve();
         unlisten();
       };
-      const error = () => {
+      const error2 = () => {
         reject(tx.error || new DOMException("AbortError", "AbortError"));
         unlisten();
       };
       tx.addEventListener("complete", complete);
-      tx.addEventListener("error", error);
-      tx.addEventListener("abort", error);
+      tx.addEventListener("error", error2);
+      tx.addEventListener("abort", error2);
     });
     transactionDoneMap.set(tx, done);
   }
@@ -439,8 +499,6 @@
   var DB_NAME = "listening-stats";
   var DB_VERSION = 4;
   var STORE_NAME = "playEvents";
-  var BACKUP_LS_KEY = "listening-stats:migration-backup";
-  var BACKUP_VERSION_KEY = "listening-stats:migration-version";
   var BACKUP_DB_NAME = "listening-stats-backup";
   var dbPromise = null;
   async function backupBeforeMigration() {
@@ -455,15 +513,15 @@
       if (events.length === 0) {
         return events;
       }
-      localStorage.setItem(BACKUP_VERSION_KEY, String(version));
+      localStorage.setItem(LS_KEYS.MIGRATION_VERSION, String(version));
       try {
         const json = JSON.stringify(events);
-        localStorage.setItem(BACKUP_LS_KEY, json);
-        console.log(`[ListeningStats] Backed up ${events.length} events to localStorage`);
+        localStorage.setItem(LS_KEYS.MIGRATION_BACKUP, json);
+        log(` Backed up ${events.length} events to localStorage`);
       } catch (e) {
         if (e?.name === "QuotaExceededError" || e?.code === 22) {
-          console.warn("[ListeningStats] localStorage full, using IndexedDB backup");
-          localStorage.removeItem(BACKUP_LS_KEY);
+          warn(" localStorage full, using IndexedDB backup");
+          localStorage.removeItem(LS_KEYS.MIGRATION_BACKUP);
           try {
             await deleteDB(BACKUP_DB_NAME);
           } catch {
@@ -475,20 +533,20 @@
           });
           await backupDb.put("backup", events, "events");
           backupDb.close();
-          console.log(`[ListeningStats] Backed up ${events.length} events to IndexedDB`);
+          log(` Backed up ${events.length} events to IndexedDB`);
         } else {
           throw e;
         }
       }
     } catch (e) {
-      console.error("[ListeningStats] Backup failed:", e);
+      error(" Backup failed:", e);
     }
     return events;
   }
   async function restoreFromBackup() {
     let events = null;
     try {
-      const json = localStorage.getItem(BACKUP_LS_KEY);
+      const json = localStorage.getItem(LS_KEYS.MIGRATION_BACKUP);
       if (json) {
         events = JSON.parse(json);
       }
@@ -518,23 +576,25 @@
             await tx.store.add(event);
           }
           await tx.done;
-          console.log(`[ListeningStats] Restored ${events.length} events from backup`);
+          log(` Restored ${events.length} events from backup`);
         }
         db.close();
       } catch (e) {
-        console.error("[ListeningStats] Restore failed:", e);
+        error(" Restore failed:", e);
       }
     }
     await cleanupBackup();
   }
   async function cleanupBackup() {
     try {
-      localStorage.removeItem(BACKUP_LS_KEY);
-    } catch {
+      localStorage.removeItem(LS_KEYS.MIGRATION_BACKUP);
+    } catch (e) {
+      console.warn("[listening-stats] Failed to remove migration backup from localStorage", e);
     }
     try {
-      localStorage.removeItem(BACKUP_VERSION_KEY);
-    } catch {
+      localStorage.removeItem(LS_KEYS.MIGRATION_VERSION);
+    } catch (e) {
+      console.warn("[listening-stats] Failed to remove migration version from localStorage", e);
     }
     try {
       await deleteDB(BACKUP_DB_NAME);
@@ -550,7 +610,13 @@
     }
     try {
       const db = await dbPromise;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
+      try {
+        const tx = db.transaction(STORE_NAME, "readonly");
+        tx.abort();
+        await tx.done.catch(() => {
+        });
+      } catch {
+        log("IndexedDB connection stale, reconnecting...");
         dbPromise = initDB();
         return dbPromise;
       }
@@ -615,64 +681,71 @@
       if (needsBackup) {
         await cleanupBackup();
         Spicetify?.showNotification?.("Database updated successfully");
-        console.log(`[ListeningStats] Migration from v${oldDbVersion} to v${DB_VERSION} complete`);
+        log(` Migration from v${oldDbVersion} to v${DB_VERSION} complete`);
       }
-      const dedupDone = localStorage.getItem("listening-stats:dedup-done");
+      const dedupDone = localStorage.getItem(LS_KEYS.DEDUP_V2_DONE);
       if (!dedupDone) {
-        const removed = await runDedup(db);
-        if (removed > 0) {
-          Spicetify?.showNotification?.(`Cleaned up ${removed} duplicate entries`);
+        const dedupResult = await runDedup(db);
+        if (dedupResult.removed > 0) {
+          Spicetify?.showNotification?.(`Cleaned up ${dedupResult.removed} duplicate entries`);
         }
-        localStorage.setItem("listening-stats:dedup-done", "1");
+        localStorage.setItem(LS_KEYS.DEDUP_V2_DONE, "1");
       }
       return db;
     } catch (e) {
-      console.error("[ListeningStats] Migration failed, attempting rollback:", e);
+      error(" Migration failed, attempting rollback:", e);
       if (needsBackup) {
         await restoreFromBackup();
       }
       const fallbackDb = await openDB(DB_NAME);
-      console.log(`[ListeningStats] Opened fallback DB at v${fallbackDb.version}`);
+      log(` Opened fallback DB at v${fallbackDb.version}`);
       return fallbackDb;
     }
   }
   async function runDedup(db) {
     try {
       const allEvents = await db.getAll(STORE_NAME);
-      const seen = /* @__PURE__ */ new Set();
-      const duplicateIds = [];
+      const byKey = /* @__PURE__ */ new Map();
       for (const event of allEvents) {
         const key = `${event.trackUri}:${event.startedAt}`;
-        if (seen.has(key)) {
-          duplicateIds.push(event.id);
-        } else {
-          seen.add(key);
+        const existing = byKey.get(key);
+        if (!existing || event.playedMs > existing.playedMs) {
+          byKey.set(key, event);
         }
       }
-      if (duplicateIds.length > 0) {
+      const keepIds = new Set(Array.from(byKey.values()).map((e) => e.id));
+      const toDelete = allEvents.filter((e) => !keepIds.has(e.id));
+      const affectedTracks = new Set(toDelete.map((e) => e.trackUri));
+      if (toDelete.length > 0) {
         const tx = db.transaction(STORE_NAME, "readwrite");
-        for (const id of duplicateIds) {
-          tx.store.delete(id);
+        for (const event of toDelete) {
+          tx.store.delete(event.id);
         }
         await tx.done;
-        console.log(`[ListeningStats] Removed ${duplicateIds.length} duplicate events`);
+        log(` Removed ${toDelete.length} duplicate events across ${affectedTracks.size} tracks`);
       }
-      return duplicateIds.length;
+      return { removed: toDelete.length, affectedTracks: affectedTracks.size };
     } catch (e) {
-      console.error("[ListeningStats] Dedup failed:", e);
-      return 0;
+      error(" Dedup failed:", e);
+      return { removed: 0, affectedTracks: 0 };
     }
   }
   async function addPlayEvent(event) {
-    const db = await getDB();
-    const range = IDBKeyRange.only(event.startedAt);
-    const existing = await db.getAllFromIndex(STORE_NAME, "by-startedAt", range);
-    if (existing.some((e) => e.trackUri === event.trackUri)) {
-      console.warn("[ListeningStats] Duplicate event blocked:", event.trackName);
-      return false;
+    try {
+      const db = await getDB();
+      const range = IDBKeyRange.only(event.startedAt);
+      const existing = await db.getAllFromIndex(STORE_NAME, "by-startedAt", range);
+      if (existing.some((e) => e.trackUri === event.trackUri)) {
+        warn(" Duplicate event blocked:", event.trackName);
+        return false;
+      }
+      await db.add(STORE_NAME, event);
+      return true;
+    } catch (e) {
+      warn(" addPlayEvent failed, resetting DB connection:", e);
+      dbPromise = null;
+      throw e;
     }
-    await db.add(STORE_NAME, event);
-    return true;
   }
   async function getPlayEventsByTimeRange(start, end) {
     const db = await getDB();
@@ -687,40 +760,49 @@
     const db = await getDB();
     await db.clear(STORE_NAME);
     resetDBPromise();
-    console.log("[ListeningStats] IndexedDB data cleared");
+    log("IndexedDB data cleared");
   }
 
   // src/services/tracker.ts
-  var STORAGE_KEY2 = "listening-stats:pollingData";
-  var LOGGING_KEY = "listening-stats:logging";
-  var STATS_UPDATED_EVENT = "listening-stats:updated";
-  var THRESHOLD_KEY = "listening-stats:playThreshold";
   var DEFAULT_THRESHOLD_MS = 1e4;
   var activeProviderType = null;
-  function isLoggingEnabled() {
+  var _warnedKeys = /* @__PURE__ */ new Set();
+  function warnOnce(key, msg, err) {
+    if (_warnedKeys.has(key)) return;
+    _warnedKeys.add(key);
+    console.warn(`[listening-stats] ${msg}`, err ?? "");
+  }
+  function isTrackingPaused() {
     try {
-      return localStorage.getItem(LOGGING_KEY) === "1";
-    } catch {
+      return localStorage.getItem(LS_KEYS.TRACKING_PAUSED) === "1";
+    } catch (e) {
+      warnOnce("trackingPaused", "Failed to read trackingPaused", e);
+      return false;
+    }
+  }
+  function isSkipRepeatsEnabled() {
+    try {
+      return localStorage.getItem(LS_KEYS.SKIP_REPEATS) === "1";
+    } catch (e) {
+      warnOnce("skipRepeats", "Failed to read skipRepeats", e);
       return false;
     }
   }
   function getPlayThreshold() {
     try {
-      const stored = localStorage.getItem(THRESHOLD_KEY);
+      const stored = localStorage.getItem(LS_KEYS.PLAY_THRESHOLD);
       if (stored) {
         const val = parseInt(stored, 10);
         if (val >= 0 && val <= 6e4) return val;
       }
-    } catch {
+    } catch (e) {
+      warnOnce("threshold", "Failed to read play threshold", e);
     }
     return DEFAULT_THRESHOLD_MS;
   }
-  function log(...args) {
-    if (isLoggingEnabled()) console.log("[ListeningStats]", ...args);
-  }
   function emitStatsUpdated() {
-    window.dispatchEvent(new CustomEvent(STATS_UPDATED_EVENT));
-    localStorage.setItem("listening-stats:lastUpdate", Date.now().toString());
+    window.dispatchEvent(new CustomEvent(EVENTS.STATS_UPDATED));
+    localStorage.setItem(LS_KEYS.LAST_UPDATE, Date.now().toString());
   }
   function defaultPollingData() {
     return {
@@ -737,7 +819,7 @@
   }
   function getPollingData() {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY2);
+      const stored = localStorage.getItem(LS_KEYS.POLLING_DATA);
       if (stored) {
         const parsed = JSON.parse(stored);
         if (!Array.isArray(parsed.hourlyDistribution) || parsed.hourlyDistribution.length !== 24) {
@@ -748,8 +830,8 @@
         if (parsed.seeded === void 0) parsed.seeded = false;
         return parsed;
       }
-    } catch (error) {
-      console.warn("[ListeningStats] Failed to load polling data:", error);
+    } catch (error2) {
+      warn(" Failed to load polling data:", error2);
     }
     return defaultPollingData();
   }
@@ -771,9 +853,9 @@
         const sorted = artistEntries.sort((a, b) => b[1] - a[1]).slice(0, 1e3);
         data.artistPlayCounts = Object.fromEntries(sorted);
       }
-      localStorage.setItem(STORAGE_KEY2, JSON.stringify(data));
-    } catch (error) {
-      console.warn("[ListeningStats] Failed to save polling data:", error);
+      localStorage.setItem(LS_KEYS.POLLING_DATA, JSON.stringify(data));
+    } catch (error2) {
+      warn(" Failed to save polling data:", error2);
     }
   }
   var currentTrackUri = null;
@@ -783,6 +865,10 @@
   var currentTrackDuration = 0;
   var lastProgressMs = 0;
   var progressHandler = null;
+  var lastWrittenUri = null;
+  var lastWrittenAt = 0;
+  var lastRecordedUri = null;
+  var DEDUP_WINDOW_MS = 500;
   async function handleSongChange() {
     if (currentTrackUri && playStartTime !== null) {
       const totalPlayedMs = accumulatedPlayTime + (isPlaying ? Date.now() - playStartTime : 0);
@@ -838,6 +924,19 @@
   }
   async function writePlayEvent(totalPlayedMs, skipped) {
     if (!previousTrackData) return;
+    if (isTrackingPaused()) {
+      log("Tracking paused \u2014 skipping write for:", previousTrackData.trackName);
+      return;
+    }
+    if (isSkipRepeatsEnabled() && previousTrackData.trackUri === lastRecordedUri) {
+      log("Skip-repeats: suppressed consecutive play for:", previousTrackData.trackName);
+      return;
+    }
+    const now = Date.now();
+    if (previousTrackData.trackUri === lastWrittenUri && now - lastWrittenAt < DEDUP_WINDOW_MS) {
+      log("Dedup: suppressed duplicate write for", previousTrackData.trackName, `(${now - lastWrittenAt}ms since last write)`);
+      return;
+    }
     if (skipped === void 0) {
       const threshold = getPlayThreshold();
       skipped = totalPlayedMs < threshold && previousTrackData.durationMs > threshold;
@@ -859,6 +958,11 @@
     try {
       const written = await addPlayEvent(event);
       if (written) {
+        lastWrittenUri = previousTrackData.trackUri;
+        lastWrittenAt = Date.now();
+        if (!skipped && isSkipRepeatsEnabled()) {
+          lastRecordedUri = previousTrackData.trackUri;
+        }
         const data = getPollingData();
         data.totalPlays++;
         if (skipped) {
@@ -872,7 +976,7 @@
         log("Dedup guard blocked duplicate event, polling data unchanged");
       }
     } catch (err) {
-      console.warn("[ListeningStats] Failed to write play event:", err);
+      warn(" Failed to write play event:", err);
     }
   }
   function handlePlayPause() {
@@ -919,7 +1023,9 @@
     captureCurrentTrackData();
     activeSongChangeHandler = () => {
       lastProgressMs = 0;
-      handleSongChange();
+      handleSongChange().catch((e) => {
+        warn("songchange handler error:", e);
+      });
       captureCurrentTrackData();
     };
     Spicetify.Player.addEventListener("songchange", activeSongChangeHandler);
@@ -936,6 +1042,26 @@
       playStartTime = Date.now();
       isPlaying = !playerData.isPaused;
     }
+    if (pollIntervalId !== null) clearInterval(pollIntervalId);
+    pollIntervalId = setInterval(() => {
+      if (!win.__lsSongHandler) {
+        warn("Watchdog: songchange listener lost, re-registering");
+        activeSongChangeHandler = () => {
+          lastProgressMs = 0;
+          handleSongChange().catch((e) => {
+            warn("songchange handler error:", e);
+          });
+          captureCurrentTrackData();
+        };
+        progressHandler = handleProgress;
+        Spicetify.Player.addEventListener("songchange", activeSongChangeHandler);
+        Spicetify.Player.addEventListener("onplaypause", handlePlayPause);
+        Spicetify.Player.addEventListener("onprogress", progressHandler);
+        win.__lsSongHandler = activeSongChangeHandler;
+        win.__lsPauseHandler = handlePlayPause;
+        win.__lsProgressHandler = progressHandler;
+      }
+    }, 3e5);
   }
   function destroyPoller() {
     if (activeSongChangeHandler) {
@@ -952,12 +1078,33 @@
     win.__lsPauseHandler = null;
     win.__lsProgressHandler = null;
     lastProgressMs = 0;
+    lastWrittenUri = null;
+    lastRecordedUri = null;
+    lastWrittenAt = 0;
     if (pollIntervalId !== null) {
       clearInterval(pollIntervalId);
       pollIntervalId = null;
     }
     activeProviderType = null;
     previousTrackData = null;
+  }
+
+  // src/utils/streak.ts
+  function calculateStreak(activityDates) {
+    const dateSet = new Set(activityDates);
+    const today = /* @__PURE__ */ new Date();
+    let streak = 0;
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const key = d.toISOString().split("T")[0];
+      if (dateSet.has(key)) {
+        streak++;
+      } else if (i > 0) {
+        break;
+      }
+    }
+    return streak;
   }
 
   // src/services/providers/lastfm.ts
@@ -1222,22 +1369,280 @@
       totalScrobbles: userInfo?.totalScrobbles
     };
   }
-  function calculateStreak(activityDates) {
-    const dateSet = new Set(activityDates);
-    const today = /* @__PURE__ */ new Date();
-    let streak = 0;
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const key = d.toISOString().split("T")[0];
-      if (dateSet.has(key)) {
-        streak++;
-      } else if (i > 0) {
-        break;
+
+  // src/services/api-resilience.ts
+  var ApiError = class extends Error {
+    constructor(message, statusCode, retryable = false) {
+      super(message);
+      this.statusCode = statusCode;
+      this.retryable = retryable;
+      this.name = "ApiError";
+    }
+  };
+  var CircuitBreaker = class {
+    constructor(failureThreshold = 5, resetTimeoutMs = 6e4) {
+      this.failureThreshold = failureThreshold;
+      this.resetTimeoutMs = resetTimeoutMs;
+      this.state = "closed";
+      this.failures = 0;
+      this.lastFailure = 0;
+    }
+    async execute(fn) {
+      if (this.state === "open") {
+        if (Date.now() - this.lastFailure >= this.resetTimeoutMs) {
+          this.state = "half_open";
+        } else {
+          throw new ApiError(
+            "Circuit open: API temporarily unavailable",
+            void 0,
+            true
+          );
+        }
+      }
+      try {
+        const result = await fn();
+        this.onSuccess();
+        return result;
+      } catch (error2) {
+        this.onFailure();
+        throw error2;
       }
     }
-    return streak;
+    reset() {
+      this.failures = 0;
+      this.state = "closed";
+    }
+    onSuccess() {
+      this.failures = 0;
+      this.state = "closed";
+    }
+    onFailure() {
+      this.failures++;
+      this.lastFailure = Date.now();
+      if (this.failures >= this.failureThreshold) {
+        this.state = "open";
+      }
+    }
+  };
+  function createBatchCoalescer(batchFn, windowMs = 50, maxBatch = 50) {
+    let pending = /* @__PURE__ */ new Map();
+    let timer = null;
+    function flush() {
+      timer = null;
+      const batch = pending;
+      pending = /* @__PURE__ */ new Map();
+      const keys = [...batch.keys()];
+      batchFn(keys).then((results) => {
+        for (const [key, entries] of batch) {
+          const val = results.get(key);
+          for (const entry of entries) {
+            entry.resolve(val);
+          }
+        }
+      }).catch((err) => {
+        for (const entries of batch.values()) {
+          for (const entry of entries) {
+            entry.reject(err);
+          }
+        }
+      });
+    }
+    return function request(key) {
+      return new Promise((resolve, reject) => {
+        const entries = pending.get(key) || [];
+        entries.push({ resolve, reject });
+        pending.set(key, entries);
+        if (pending.size >= maxBatch) {
+          if (timer) clearTimeout(timer);
+          flush();
+        } else if (!timer) {
+          timer = setTimeout(flush, windowMs);
+        }
+      });
+    };
   }
+
+  // src/services/spotify-api.ts
+  var QUEUE_DELAY_MS = 300;
+  var MAX_BATCH = 50;
+  var CACHE_TTL_MS2 = 3e5;
+  var DEFAULT_BACKOFF_MS = 6e4;
+  var MAX_BACKOFF_MS = 6e5;
+  var rateLimitedUntil = 0;
+  try {
+    const stored = localStorage.getItem(`${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`);
+    if (stored) {
+      const val = parseInt(stored, 10);
+      rateLimitedUntil = Date.now() >= val ? 0 : val;
+      if (rateLimitedUntil === 0) {
+        localStorage.removeItem(`${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`);
+      }
+    }
+  } catch (e) {
+    console.warn("[listening-stats] API cache read failed", e);
+  }
+  function isApiAvailable() {
+    return Date.now() >= rateLimitedUntil;
+  }
+  function setRateLimit(error2) {
+    let backoffMs = DEFAULT_BACKOFF_MS;
+    const retryAfterRaw = error2?.headers?.["retry-after"] ?? error2?.body?.["Retry-After"] ?? error2?.headers?.["Retry-After"];
+    if (retryAfterRaw != null) {
+      const parsed = parseInt(String(retryAfterRaw), 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        backoffMs = Math.min(parsed * 1e3, MAX_BACKOFF_MS);
+      }
+    }
+    rateLimitedUntil = Date.now() + backoffMs;
+    localStorage.setItem(
+      `${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`,
+      rateLimitedUntil.toString()
+    );
+  }
+  var cache2 = /* @__PURE__ */ new Map();
+  function getCached2(key) {
+    const entry = cache2.get(key);
+    if (!entry) return null;
+    if (Date.now() >= entry.expiresAt) {
+      cache2.delete(key);
+      return null;
+    }
+    return entry.data;
+  }
+  function setCache2(key, data) {
+    cache2.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS2 });
+  }
+  var PRIORITY_ORDER = { high: 0, normal: 1, low: 2 };
+  var queue = [];
+  var draining = false;
+  var inflight = /* @__PURE__ */ new Map();
+  var circuitBreaker = new CircuitBreaker(5, 6e4);
+  function enqueueWithPriority(key, fn, priority = "normal") {
+    const existing = inflight.get(key);
+    if (existing) return existing;
+    const promise = new Promise((resolve, reject) => {
+      queue.push({ key, fn, resolve, reject, priority });
+      queue.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
+      if (!draining) drainQueue();
+    });
+    inflight.set(key, promise);
+    promise.finally(() => inflight.delete(key));
+    return promise;
+  }
+  async function drainQueue() {
+    draining = true;
+    while (queue.length > 0) {
+      if (!isApiAvailable()) {
+        const waitMs = rateLimitedUntil - Date.now();
+        await new Promise((r) => setTimeout(r, waitMs));
+      }
+      const item = queue.shift();
+      try {
+        const result = await circuitBreaker.execute(() => item.fn());
+        item.resolve(result);
+      } catch (error2) {
+        if (error2?.message?.includes("429") || error2?.status === 429 || error2?.statusCode === 429) {
+          setRateLimit(error2);
+        }
+        item.reject(error2);
+      }
+      if (queue.length > 0) {
+        await new Promise((r) => setTimeout(r, QUEUE_DELAY_MS));
+      }
+    }
+    draining = false;
+  }
+  async function apiFetch(url) {
+    const cached = getCached2(url);
+    if (cached) return cached;
+    return enqueueWithPriority(url, async () => {
+      let response;
+      try {
+        response = await Spicetify.CosmosAsync.get(url);
+      } catch (err) {
+        if (err?.status === 429 || String(err?.message || "").includes("429")) {
+          setRateLimit(err);
+          throw new ApiError(
+            err?.message || "Rate limited",
+            429,
+            true
+          );
+        }
+        const status = err?.status;
+        throw new ApiError(
+          err?.message || "API request failed",
+          status,
+          status !== void 0 && (status === 429 || status >= 500)
+        );
+      }
+      if (!response) {
+        throw new ApiError("Empty API response", void 0, false);
+      }
+      if (response.error) {
+        const status = response.error.status;
+        const message = response.error.message || `Spotify API error ${status}`;
+        if (status === 429) setRateLimit(response);
+        throw new ApiError(message, status, status === 429 || status >= 500);
+      }
+      setCache2(url, response);
+      return response;
+    });
+  }
+  var searchCache = /* @__PURE__ */ new Map();
+  try {
+    const stored = localStorage.getItem(LS_KEYS.SEARCH_CACHE);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      for (const [k, v] of Object.entries(parsed)) {
+        searchCache.set(k, v);
+      }
+    }
+  } catch (e) {
+    console.warn("[listening-stats] Search cache read failed", e);
+  }
+  async function getArtistsBatch(artistIds) {
+    const unique = [...new Set(artistIds)].filter(Boolean);
+    if (unique.length === 0) return [];
+    const results = [];
+    for (let i = 0; i < unique.length; i += MAX_BATCH) {
+      const chunk = unique.slice(i, i + MAX_BATCH);
+      const ids = chunk.join(",");
+      try {
+        const response = await apiFetch(
+          `https://api.spotify.com/v1/artists?ids=${ids}`
+        );
+        if (response?.artists) {
+          results.push(...response.artists.filter(Boolean));
+        }
+      } catch (error2) {
+        warn(" Artist batch fetch failed:", error2);
+      }
+    }
+    return results;
+  }
+  var artistCoalescer = createBatchCoalescer(
+    async (ids) => {
+      const results = /* @__PURE__ */ new Map();
+      for (let i = 0; i < ids.length; i += MAX_BATCH) {
+        const chunk = ids.slice(i, i + MAX_BATCH);
+        try {
+          const response = await apiFetch(
+            `https://api.spotify.com/v1/artists?ids=${chunk.join(",")}`
+          );
+          if (response?.artists) {
+            for (const artist of response.artists.filter(Boolean)) {
+              if (artist.id) results.set(artist.id, artist);
+            }
+          }
+        } catch (error2) {
+          warn(" Artist batch fetch failed:", error2);
+        }
+      }
+      return results;
+    },
+    50,
+    MAX_BATCH
+  );
 
   // src/services/providers/local.ts
   var PERIODS2 = ["today", "this_week", "this_month", "all_time"];
@@ -1312,6 +1717,7 @@
       if (existing) {
         existing.count++;
         existing.totalMs += e.playedMs;
+        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
       } else {
         trackMap.set(e.trackUri, {
           trackUri: e.trackUri,
@@ -1319,11 +1725,17 @@
           artistName: e.artistName,
           albumArt: e.albumArt,
           count: 1,
-          totalMs: e.playedMs
+          totalMs: e.playedMs,
+          lastPlayedAt: e.startedAt
         });
       }
     }
-    const topTracks = Array.from(trackMap.values()).sort((a, b) => b.count - a.count).slice(0, 10).map((t, i) => ({
+    const topTracks = Array.from(trackMap.values()).sort((a, b) => {
+      if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
+      if (b.count !== a.count) return b.count - a.count;
+      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      return a.trackUri.localeCompare(b.trackUri);
+    }).slice(0, 10).map((t, i) => ({
       trackUri: t.trackUri,
       trackName: t.trackName,
       artistName: t.artistName,
@@ -1338,38 +1750,79 @@
       const existing = artistMap.get(key);
       if (existing) {
         existing.count++;
+        existing.totalMs += e.playedMs;
+        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
       } else {
         artistMap.set(key, {
           artistUri: e.artistUri,
           artistName: e.artistName,
-          count: 1
+          count: 1,
+          totalMs: e.playedMs,
+          lastPlayedAt: e.startedAt
         });
       }
     }
-    const topArtistAggregated = Array.from(artistMap.values()).sort((a, b) => b.count - a.count).slice(0, 10);
+    const topArtistAggregated = Array.from(artistMap.values()).sort((a, b) => {
+      if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
+      if (b.count !== a.count) return b.count - a.count;
+      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      const aKey = a.artistUri || a.artistName;
+      const bKey = b.artistUri || b.artistName;
+      return aKey.localeCompare(bKey);
+    }).slice(0, 10);
     const topArtists = topArtistAggregated.map((a, i) => ({
       artistUri: a.artistUri,
       artistName: a.artistName,
+      artistImage: void 0,
       rank: i + 1,
       genres: [],
       playCount: a.count
     }));
+    const artistIds = topArtists.map((a) => Spicetify.URI.from(a.artistUri)?.id).filter((id) => !!id);
+    if (artistIds.length > 0) {
+      try {
+        const artists = await getArtistsBatch(artistIds);
+        const imageMap = /* @__PURE__ */ new Map();
+        for (const artist of artists) {
+          if (artist.id && artist.images?.[0]?.url) {
+            imageMap.set(artist.id, artist.images[0].url);
+          }
+        }
+        for (const a of topArtists) {
+          const id = Spicetify.URI.from(a.artistUri)?.id;
+          if (id && imageMap.has(id)) {
+            a.artistImage = imageMap.get(id);
+          }
+        }
+      } catch (e) {
+        console.warn("[listening-stats] Artist enrichment failed:", e);
+      }
+    }
     const albumMap = /* @__PURE__ */ new Map();
     for (const e of completedEvents) {
       const existing = albumMap.get(e.albumUri);
       if (existing) {
         existing.trackCount++;
+        existing.totalMs += e.playedMs;
+        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
       } else {
         albumMap.set(e.albumUri, {
           albumUri: e.albumUri,
           albumName: e.albumName || "Unknown Album",
           artistName: e.artistName,
           albumArt: e.albumArt,
-          trackCount: 1
+          trackCount: 1,
+          totalMs: e.playedMs,
+          lastPlayedAt: e.startedAt
         });
       }
     }
-    const topAlbums = Array.from(albumMap.values()).sort((a, b) => b.trackCount - a.trackCount).slice(0, 10).map((a) => ({
+    const topAlbums = Array.from(albumMap.values()).sort((a, b) => {
+      if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
+      if (b.trackCount !== a.trackCount) return b.trackCount - a.trackCount;
+      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      return a.albumUri.localeCompare(b.albumUri);
+    }).slice(0, 10).map((a) => ({
       ...a,
       playCount: a.trackCount
     }));
@@ -1424,67 +1877,51 @@
       recentTracks,
       genres,
       topGenres,
-      streakDays: calculateStreak2(allDates),
+      streakDays: calculateStreak(allDates),
       newArtistsCount: 0,
       skipRate: events.length > 0 ? skipEvents / events.length : 0,
       listenedDays: periodDates.size,
       lastfmConnected: false
     };
   }
-  function calculateStreak2(activityDates) {
-    const dateSet = new Set(activityDates);
-    const today = /* @__PURE__ */ new Date();
-    let streak = 0;
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const key = d.toISOString().split("T")[0];
-      if (dateSet.has(key)) {
-        streak++;
-      } else if (i > 0) {
-        break;
-      }
-    }
-    return streak;
-  }
 
   // src/services/statsfm.ts
   var API_BASE = "https://api.stats.fm/api/v1";
-  var STORAGE_KEY3 = "listening-stats:statsfm";
-  var CACHE_TTL_MS2 = 12e4;
+  var CACHE_TTL_MS3 = 12e4;
   var configCache2 = void 0;
   function getConfig2() {
     if (configCache2 !== void 0) return configCache2;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY3);
+      const stored = localStorage.getItem(LS_KEYS.STATSFM_CONFIG);
       if (stored) {
         configCache2 = JSON.parse(stored);
         return configCache2;
       }
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] stats.fm config read failed", e);
     }
     configCache2 = null;
     return null;
   }
   function saveConfig(config) {
     configCache2 = config;
-    localStorage.setItem(STORAGE_KEY3, JSON.stringify(config));
+    localStorage.setItem(LS_KEYS.STATSFM_CONFIG, JSON.stringify(config));
   }
-  var cache2 = /* @__PURE__ */ new Map();
-  function getCached2(key) {
-    const entry = cache2.get(key);
+  var cache3 = /* @__PURE__ */ new Map();
+  function getCached3(key) {
+    const entry = cache3.get(key);
     if (!entry || Date.now() >= entry.expiresAt) {
-      cache2.delete(key);
+      cache3.delete(key);
       return null;
     }
     return entry.data;
   }
-  function setCache2(key, data) {
-    cache2.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS2 });
+  function setCache3(key, data) {
+    cache3.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS3 });
   }
   async function statsfmFetch(path) {
     const url = `${API_BASE}${path}`;
-    const cached = getCached2(url);
+    const cached = getCached3(url);
     if (cached) return cached;
     const response = await fetch(url);
     if (!response.ok) {
@@ -1495,7 +1932,7 @@
       throw new Error(`stats.fm API error: ${response.status}`);
     }
     const data = await response.json();
-    setCache2(url, data);
+    setCache3(url, data);
     return data;
   }
   async function validateUser2(username) {
@@ -1537,7 +1974,8 @@
         `/users/${getUsername()}/top/albums?range=${range}&limit=${limit}&orderBy=COUNT`
       );
       return data.items || [];
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] stats.fm API call failed", e);
       return [];
     }
   }
@@ -1581,7 +2019,8 @@
         saveConfig({ ...config, isPlus: info.isPlus });
         return true;
       }
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] stats.fm date parsing failed", e);
     }
     return false;
   }
@@ -1766,48 +2205,32 @@
       recentTracks,
       genres,
       topGenres,
-      streakDays: calculateStreak3(activityDates),
+      streakDays: calculateStreak(activityDates),
       newArtistsCount: 0,
       skipRate: pollingData.totalPlays > 0 ? pollingData.skipEvents / pollingData.totalPlays : 0,
       listenedDays: activityDates.length,
       lastfmConnected: false
     };
   }
-  function calculateStreak3(activityDates) {
-    const dateSet = new Set(activityDates);
-    const today = /* @__PURE__ */ new Date();
-    let streak = 0;
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const key = d.toISOString().split("T")[0];
-      if (dateSet.has(key)) {
-        streak++;
-      } else if (i > 0) {
-        break;
-      }
-    }
-    return streak;
-  }
 
   // src/services/providers/index.ts
-  var STORAGE_KEY4 = "listening-stats:provider";
   var activeProvider = null;
   function getSelectedProviderType() {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY4);
+      const stored = localStorage.getItem(LS_KEYS.PROVIDER);
       if (stored === "local" || stored === "lastfm" || stored === "statsfm") {
         return stored;
       }
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] Provider selection read failed", e);
     }
     return null;
   }
   function setSelectedProviderType(type) {
-    localStorage.setItem(STORAGE_KEY4, type);
+    localStorage.setItem(LS_KEYS.PROVIDER, type);
   }
   function hasExistingData() {
-    return localStorage.getItem("listening-stats:pollingData") !== null;
+    return localStorage.getItem(LS_KEYS.POLLING_DATA) !== null;
   }
   function activateProvider(type, skipInit = false) {
     if (activeProvider) {
@@ -1835,9 +2258,7 @@
   window.ListeningStats = {
     resetLastfmKey: () => {
       clearConfig();
-      console.log(
-        "[Listening Stats] Last.fm API key cleared. Reload the app to reconfigure."
-      );
+      log("Last.fm API key cleared. Reload the app to reconfigure.");
     }
   };
   async function main() {

@@ -20,6 +20,92 @@ var ListeningStatsApp = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
+  // src/constants.ts
+  function clearAllLocalStorage() {
+    try {
+      for (const [name, key] of Object.entries(LS_KEYS)) {
+        if (name === "STORAGE_PREFIX") continue;
+        localStorage.removeItem(key);
+      }
+    } catch {
+    }
+  }
+  var LS_KEYS, EVENTS;
+  var init_constants = __esm({
+    "src/constants.ts"() {
+      LS_KEYS = {
+        /** Prefix used for dynamic key construction (e.g. rateLimitedUntil) */
+        STORAGE_PREFIX: "listening-stats:",
+        // Provider & tracking
+        PROVIDER: "listening-stats:provider",
+        POLLING_DATA: "listening-stats:pollingData",
+        PLAY_THRESHOLD: "listening-stats:playThreshold",
+        TRACKING_PAUSED: "listening-stats:tracking-paused",
+        SKIP_REPEATS: "listening-stats:skip-repeats",
+        LAST_UPDATE: "listening-stats:lastUpdate",
+        // Logging
+        LOGGING: "listening-stats:logging",
+        // User preferences
+        PREFERENCES: "listening-stats:preferences",
+        // External provider configs
+        LASTFM_CONFIG: "listening-stats:lastfm",
+        STATSFM_CONFIG: "listening-stats:statsfm",
+        // Updater
+        LAST_UPDATE_CHECK: "listening-stats:lastUpdateCheck",
+        // API cache
+        SEARCH_CACHE: "listening-stats:searchCache",
+        // One-time migration flags
+        DEDUP_V2_DONE: "listening-stats:dedup-v2-done",
+        MIGRATION_BACKUP: "listening-stats:migration-backup",
+        MIGRATION_VERSION: "listening-stats:migration-version",
+        // UI state
+        SFM_PROMO_DISMISSED: "listening-stats:sfm-promo-dismissed",
+        TOUR_SEEN: "listening-stats:tour-seen",
+        TOUR_VERSION: "listening-stats:tour-version",
+        CARD_ORDER: "listening-stats:card-order",
+        PERIOD: "listening-stats:period"
+      };
+      EVENTS = {
+        STATS_UPDATED: "listening-stats:updated",
+        PREFS_CHANGED: "listening-stats:prefs-changed",
+        RESET_LAYOUT: "listening-stats:reset-layout",
+        START_TOUR: "listening-stats:start-tour"
+      };
+    }
+  });
+
+  // src/services/logger.ts
+  function isLoggingEnabled() {
+    try {
+      return localStorage.getItem(LS_KEYS.LOGGING) === "1";
+    } catch (e) {
+      console.warn("[listening-stats] Logger config access failed", e);
+      return false;
+    }
+  }
+  function setLoggingEnabled(enabled) {
+    try {
+      if (enabled) localStorage.setItem(LS_KEYS.LOGGING, "1");
+      else localStorage.removeItem(LS_KEYS.LOGGING);
+    } catch (e) {
+      console.warn("[listening-stats] Logger config access failed", e);
+    }
+  }
+  function log(...args) {
+    if (isLoggingEnabled()) console.log("[ListeningStats]", ...args);
+  }
+  function warn(...args) {
+    if (isLoggingEnabled()) console.warn("[ListeningStats]", ...args);
+  }
+  function error(...args) {
+    if (isLoggingEnabled()) console.error("[ListeningStats]", ...args);
+  }
+  var init_logger = __esm({
+    "src/services/logger.ts"() {
+      init_constants();
+    }
+  });
+
   // node_modules/idb/build/index.js
   function getIdbProxyableTypes() {
     return idbProxyableTypes || (idbProxyableTypes = [
@@ -41,18 +127,18 @@ var ListeningStatsApp = (() => {
     const promise = new Promise((resolve, reject) => {
       const unlisten = () => {
         request.removeEventListener("success", success);
-        request.removeEventListener("error", error);
+        request.removeEventListener("error", error2);
       };
       const success = () => {
         resolve(wrap(request.result));
         unlisten();
       };
-      const error = () => {
+      const error2 = () => {
         reject(request.error);
         unlisten();
       };
       request.addEventListener("success", success);
-      request.addEventListener("error", error);
+      request.addEventListener("error", error2);
     });
     reverseTransformCache.set(promise, request);
     return promise;
@@ -63,20 +149,20 @@ var ListeningStatsApp = (() => {
     const done = new Promise((resolve, reject) => {
       const unlisten = () => {
         tx.removeEventListener("complete", complete);
-        tx.removeEventListener("error", error);
-        tx.removeEventListener("abort", error);
+        tx.removeEventListener("error", error2);
+        tx.removeEventListener("abort", error2);
       };
       const complete = () => {
         resolve();
         unlisten();
       };
-      const error = () => {
+      const error2 = () => {
         reject(tx.error || new DOMException("AbortError", "AbortError"));
         unlisten();
       };
       tx.addEventListener("complete", complete);
-      tx.addEventListener("error", error);
-      tx.addEventListener("abort", error);
+      tx.addEventListener("error", error2);
+      tx.addEventListener("abort", error2);
     });
     transactionDoneMap.set(tx, done);
   }
@@ -292,15 +378,15 @@ var ListeningStatsApp = (() => {
       if (events.length === 0) {
         return events;
       }
-      localStorage.setItem(BACKUP_VERSION_KEY, String(version));
+      localStorage.setItem(LS_KEYS.MIGRATION_VERSION, String(version));
       try {
         const json = JSON.stringify(events);
-        localStorage.setItem(BACKUP_LS_KEY, json);
-        console.log(`[ListeningStats] Backed up ${events.length} events to localStorage`);
+        localStorage.setItem(LS_KEYS.MIGRATION_BACKUP, json);
+        log(` Backed up ${events.length} events to localStorage`);
       } catch (e) {
         if (e?.name === "QuotaExceededError" || e?.code === 22) {
-          console.warn("[ListeningStats] localStorage full, using IndexedDB backup");
-          localStorage.removeItem(BACKUP_LS_KEY);
+          warn(" localStorage full, using IndexedDB backup");
+          localStorage.removeItem(LS_KEYS.MIGRATION_BACKUP);
           try {
             await deleteDB(BACKUP_DB_NAME);
           } catch {
@@ -312,20 +398,20 @@ var ListeningStatsApp = (() => {
           });
           await backupDb.put("backup", events, "events");
           backupDb.close();
-          console.log(`[ListeningStats] Backed up ${events.length} events to IndexedDB`);
+          log(` Backed up ${events.length} events to IndexedDB`);
         } else {
           throw e;
         }
       }
     } catch (e) {
-      console.error("[ListeningStats] Backup failed:", e);
+      error(" Backup failed:", e);
     }
     return events;
   }
   async function restoreFromBackup() {
     let events = null;
     try {
-      const json = localStorage.getItem(BACKUP_LS_KEY);
+      const json = localStorage.getItem(LS_KEYS.MIGRATION_BACKUP);
       if (json) {
         events = JSON.parse(json);
       }
@@ -355,23 +441,25 @@ var ListeningStatsApp = (() => {
             await tx.store.add(event);
           }
           await tx.done;
-          console.log(`[ListeningStats] Restored ${events.length} events from backup`);
+          log(` Restored ${events.length} events from backup`);
         }
         db.close();
       } catch (e) {
-        console.error("[ListeningStats] Restore failed:", e);
+        error(" Restore failed:", e);
       }
     }
     await cleanupBackup();
   }
   async function cleanupBackup() {
     try {
-      localStorage.removeItem(BACKUP_LS_KEY);
-    } catch {
+      localStorage.removeItem(LS_KEYS.MIGRATION_BACKUP);
+    } catch (e) {
+      console.warn("[listening-stats] Failed to remove migration backup from localStorage", e);
     }
     try {
-      localStorage.removeItem(BACKUP_VERSION_KEY);
-    } catch {
+      localStorage.removeItem(LS_KEYS.MIGRATION_VERSION);
+    } catch (e) {
+      console.warn("[listening-stats] Failed to remove migration version from localStorage", e);
     }
     try {
       await deleteDB(BACKUP_DB_NAME);
@@ -387,7 +475,13 @@ var ListeningStatsApp = (() => {
     }
     try {
       const db = await dbPromise;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
+      try {
+        const tx = db.transaction(STORE_NAME, "readonly");
+        tx.abort();
+        await tx.done.catch(() => {
+        });
+      } catch {
+        log("IndexedDB connection stale, reconnecting...");
         dbPromise = initDB();
         return dbPromise;
       }
@@ -452,64 +546,71 @@ var ListeningStatsApp = (() => {
       if (needsBackup) {
         await cleanupBackup();
         Spicetify?.showNotification?.("Database updated successfully");
-        console.log(`[ListeningStats] Migration from v${oldDbVersion} to v${DB_VERSION} complete`);
+        log(` Migration from v${oldDbVersion} to v${DB_VERSION} complete`);
       }
-      const dedupDone = localStorage.getItem("listening-stats:dedup-done");
+      const dedupDone = localStorage.getItem(LS_KEYS.DEDUP_V2_DONE);
       if (!dedupDone) {
-        const removed = await runDedup(db);
-        if (removed > 0) {
-          Spicetify?.showNotification?.(`Cleaned up ${removed} duplicate entries`);
+        const dedupResult = await runDedup(db);
+        if (dedupResult.removed > 0) {
+          Spicetify?.showNotification?.(`Cleaned up ${dedupResult.removed} duplicate entries`);
         }
-        localStorage.setItem("listening-stats:dedup-done", "1");
+        localStorage.setItem(LS_KEYS.DEDUP_V2_DONE, "1");
       }
       return db;
     } catch (e) {
-      console.error("[ListeningStats] Migration failed, attempting rollback:", e);
+      error(" Migration failed, attempting rollback:", e);
       if (needsBackup) {
         await restoreFromBackup();
       }
       const fallbackDb = await openDB(DB_NAME);
-      console.log(`[ListeningStats] Opened fallback DB at v${fallbackDb.version}`);
+      log(` Opened fallback DB at v${fallbackDb.version}`);
       return fallbackDb;
     }
   }
   async function runDedup(db) {
     try {
       const allEvents = await db.getAll(STORE_NAME);
-      const seen = /* @__PURE__ */ new Set();
-      const duplicateIds = [];
+      const byKey = /* @__PURE__ */ new Map();
       for (const event of allEvents) {
         const key = `${event.trackUri}:${event.startedAt}`;
-        if (seen.has(key)) {
-          duplicateIds.push(event.id);
-        } else {
-          seen.add(key);
+        const existing = byKey.get(key);
+        if (!existing || event.playedMs > existing.playedMs) {
+          byKey.set(key, event);
         }
       }
-      if (duplicateIds.length > 0) {
+      const keepIds = new Set(Array.from(byKey.values()).map((e) => e.id));
+      const toDelete = allEvents.filter((e) => !keepIds.has(e.id));
+      const affectedTracks = new Set(toDelete.map((e) => e.trackUri));
+      if (toDelete.length > 0) {
         const tx = db.transaction(STORE_NAME, "readwrite");
-        for (const id of duplicateIds) {
-          tx.store.delete(id);
+        for (const event of toDelete) {
+          tx.store.delete(event.id);
         }
         await tx.done;
-        console.log(`[ListeningStats] Removed ${duplicateIds.length} duplicate events`);
+        log(` Removed ${toDelete.length} duplicate events across ${affectedTracks.size} tracks`);
       }
-      return duplicateIds.length;
+      return { removed: toDelete.length, affectedTracks: affectedTracks.size };
     } catch (e) {
-      console.error("[ListeningStats] Dedup failed:", e);
-      return 0;
+      error(" Dedup failed:", e);
+      return { removed: 0, affectedTracks: 0 };
     }
   }
   async function addPlayEvent(event) {
-    const db = await getDB();
-    const range = IDBKeyRange.only(event.startedAt);
-    const existing = await db.getAllFromIndex(STORE_NAME, "by-startedAt", range);
-    if (existing.some((e) => e.trackUri === event.trackUri)) {
-      console.warn("[ListeningStats] Duplicate event blocked:", event.trackName);
-      return false;
+    try {
+      const db = await getDB();
+      const range = IDBKeyRange.only(event.startedAt);
+      const existing = await db.getAllFromIndex(STORE_NAME, "by-startedAt", range);
+      if (existing.some((e) => e.trackUri === event.trackUri)) {
+        warn(" Duplicate event blocked:", event.trackName);
+        return false;
+      }
+      await db.add(STORE_NAME, event);
+      return true;
+    } catch (e) {
+      warn(" addPlayEvent failed, resetting DB connection:", e);
+      dbPromise = null;
+      throw e;
     }
-    await db.add(STORE_NAME, event);
-    return true;
   }
   async function deduplicateExistingEvents() {
     const db = await getDB();
@@ -528,17 +629,17 @@ var ListeningStatsApp = (() => {
     const db = await getDB();
     await db.clear(STORE_NAME);
     resetDBPromise();
-    console.log("[ListeningStats] IndexedDB data cleared");
+    log("IndexedDB data cleared");
   }
-  var DB_NAME, DB_VERSION, STORE_NAME, BACKUP_LS_KEY, BACKUP_VERSION_KEY, BACKUP_DB_NAME, dbPromise;
+  var DB_NAME, DB_VERSION, STORE_NAME, BACKUP_DB_NAME, dbPromise;
   var init_storage = __esm({
     "src/services/storage.ts"() {
       init_build();
+      init_logger();
+      init_constants();
       DB_NAME = "listening-stats";
       DB_VERSION = 4;
       STORE_NAME = "playEvents";
-      BACKUP_LS_KEY = "listening-stats:migration-backup";
-      BACKUP_VERSION_KEY = "listening-stats:migration-version";
       BACKUP_DB_NAME = "listening-stats-backup";
       dbPromise = null;
     }
@@ -583,9 +684,9 @@ var ListeningStatsApp = (() => {
         const result = await fn();
         this.onSuccess();
         return result;
-      } catch (error) {
+      } catch (error2) {
         this.onFailure();
-        throw error;
+        throw error2;
       }
     }
     reset() {
@@ -642,9 +743,11 @@ var ListeningStatsApp = (() => {
     };
   }
 
+  // src/app/index.tsx
+  init_logger();
+
   // src/services/preferences.ts
-  var PREFS_KEY = "listening-stats:preferences";
-  var PREFS_CHANGED_EVENT = "listening-stats:prefs-changed";
+  init_constants();
   var DEFAULTS = {
     use24HourTime: false,
     itemsPerSection: 5,
@@ -655,12 +758,13 @@ var ListeningStatsApp = (() => {
   function getPreferences() {
     if (cached) return cached;
     try {
-      const stored = localStorage.getItem(PREFS_KEY);
+      const stored = localStorage.getItem(LS_KEYS.PREFERENCES);
       if (stored) {
         cached = { ...DEFAULTS, ...JSON.parse(stored) };
         return cached;
       }
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] Preferences read failed", e);
     }
     cached = { ...DEFAULTS };
     return cached;
@@ -670,11 +774,12 @@ var ListeningStatsApp = (() => {
     prefs[key] = value;
     cached = prefs;
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
-    } catch {
+      localStorage.setItem(LS_KEYS.PREFERENCES, JSON.stringify(prefs));
+    } catch (e) {
+      console.warn("[listening-stats] Preferences write failed", e);
     }
     window.dispatchEvent(
-      new CustomEvent(PREFS_CHANGED_EVENT, { detail: { key, value } })
+      new CustomEvent(EVENTS.PREFS_CHANGED, { detail: { key, value } })
     );
   }
   function onPreferencesChanged(callback) {
@@ -682,35 +787,36 @@ var ListeningStatsApp = (() => {
       const { key, value } = e.detail;
       callback(key, value);
     };
-    window.addEventListener(PREFS_CHANGED_EVENT, handler);
-    return () => window.removeEventListener(PREFS_CHANGED_EVENT, handler);
+    window.addEventListener(EVENTS.PREFS_CHANGED, handler);
+    return () => window.removeEventListener(EVENTS.PREFS_CHANGED, handler);
   }
 
   // src/services/lastfm.ts
+  init_constants();
   var LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/";
-  var STORAGE_KEY = "listening-stats:lastfm";
   var CACHE_TTL_MS = 3e5;
   var configCache = void 0;
   function getConfig() {
     if (configCache !== void 0) return configCache;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(LS_KEYS.LASTFM_CONFIG);
       if (stored) {
         configCache = JSON.parse(stored);
         return configCache;
       }
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] Last.fm config read failed", e);
     }
     configCache = null;
     return null;
   }
   function saveConfig(config) {
     configCache = config;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    localStorage.setItem(LS_KEYS.LASTFM_CONFIG, JSON.stringify(config));
   }
   function clearConfig() {
     configCache = null;
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(LS_KEYS.LASTFM_CONFIG);
   }
   function isConnected() {
     const config = getConfig();
@@ -882,55 +988,88 @@ var ListeningStatsApp = (() => {
     if (!config) return null;
     try {
       return await validateUser(config.username, config.apiKey);
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] Last.fm date parsing failed", e);
       return null;
     }
   }
 
   // src/services/tracker.ts
+  init_logger();
   init_storage();
-  var STORAGE_KEY2 = "listening-stats:pollingData";
-  var LOGGING_KEY = "listening-stats:logging";
-  var STATS_UPDATED_EVENT = "listening-stats:updated";
-  var THRESHOLD_KEY = "listening-stats:playThreshold";
+  init_constants();
+  init_logger();
   var DEFAULT_THRESHOLD_MS = 1e4;
   var activeProviderType = null;
-  function isLoggingEnabled() {
+  var _warnedKeys = /* @__PURE__ */ new Set();
+  function warnOnce(key, msg, err) {
+    if (_warnedKeys.has(key)) return;
+    _warnedKeys.add(key);
+    console.warn(`[listening-stats] ${msg}`, err ?? "");
+  }
+  function isTrackingPaused() {
     try {
-      return localStorage.getItem(LOGGING_KEY) === "1";
-    } catch {
+      return localStorage.getItem(LS_KEYS.TRACKING_PAUSED) === "1";
+    } catch (e) {
+      warnOnce("trackingPaused", "Failed to read trackingPaused", e);
       return false;
     }
   }
-  function setLoggingEnabled(enabled) {
+  function setTrackingPaused(paused) {
     try {
-      if (enabled) localStorage.setItem(LOGGING_KEY, "1");
-      else localStorage.removeItem(LOGGING_KEY);
-    } catch {
+      if (paused) localStorage.setItem(LS_KEYS.TRACKING_PAUSED, "1");
+      else localStorage.removeItem(LS_KEYS.TRACKING_PAUSED);
+    } catch (e) {
+      warnOnce("trackingPaused", "Failed to write trackingPaused", e);
     }
+  }
+  function isSkipRepeatsEnabled() {
+    try {
+      return localStorage.getItem(LS_KEYS.SKIP_REPEATS) === "1";
+    } catch (e) {
+      warnOnce("skipRepeats", "Failed to read skipRepeats", e);
+      return false;
+    }
+  }
+  function setSkipRepeatsEnabled(enabled) {
+    try {
+      if (enabled) {
+        localStorage.setItem(LS_KEYS.SKIP_REPEATS, "1");
+        lastRecordedUri = null;
+      } else {
+        localStorage.removeItem(LS_KEYS.SKIP_REPEATS);
+      }
+    } catch (e) {
+      warnOnce("skipRepeats", "Failed to write skipRepeats", e);
+    }
+  }
+  function resetAccumulator() {
+    if (isPlaying) {
+      playStartTime = Date.now();
+    }
+    accumulatedPlayTime = 0;
+    log("Accumulator reset (tracking resumed)");
   }
   function getPlayThreshold() {
     try {
-      const stored = localStorage.getItem(THRESHOLD_KEY);
+      const stored = localStorage.getItem(LS_KEYS.PLAY_THRESHOLD);
       if (stored) {
         const val = parseInt(stored, 10);
         if (val >= 0 && val <= 6e4) return val;
       }
-    } catch {
+    } catch (e) {
+      warnOnce("threshold", "Failed to read play threshold", e);
     }
     return DEFAULT_THRESHOLD_MS;
   }
-  function log(...args) {
-    if (isLoggingEnabled()) console.log("[ListeningStats]", ...args);
-  }
   function onStatsUpdated(callback) {
     const handler = () => callback();
-    window.addEventListener(STATS_UPDATED_EVENT, handler);
-    return () => window.removeEventListener(STATS_UPDATED_EVENT, handler);
+    window.addEventListener(EVENTS.STATS_UPDATED, handler);
+    return () => window.removeEventListener(EVENTS.STATS_UPDATED, handler);
   }
   function emitStatsUpdated() {
-    window.dispatchEvent(new CustomEvent(STATS_UPDATED_EVENT));
-    localStorage.setItem("listening-stats:lastUpdate", Date.now().toString());
+    window.dispatchEvent(new CustomEvent(EVENTS.STATS_UPDATED));
+    localStorage.setItem(LS_KEYS.LAST_UPDATE, Date.now().toString());
   }
   function defaultPollingData() {
     return {
@@ -947,7 +1086,7 @@ var ListeningStatsApp = (() => {
   }
   function getPollingData() {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY2);
+      const stored = localStorage.getItem(LS_KEYS.POLLING_DATA);
       if (stored) {
         const parsed = JSON.parse(stored);
         if (!Array.isArray(parsed.hourlyDistribution) || parsed.hourlyDistribution.length !== 24) {
@@ -958,8 +1097,8 @@ var ListeningStatsApp = (() => {
         if (parsed.seeded === void 0) parsed.seeded = false;
         return parsed;
       }
-    } catch (error) {
-      console.warn("[ListeningStats] Failed to load polling data:", error);
+    } catch (error2) {
+      warn(" Failed to load polling data:", error2);
     }
     return defaultPollingData();
   }
@@ -981,13 +1120,13 @@ var ListeningStatsApp = (() => {
         const sorted = artistEntries.sort((a, b) => b[1] - a[1]).slice(0, 1e3);
         data.artistPlayCounts = Object.fromEntries(sorted);
       }
-      localStorage.setItem(STORAGE_KEY2, JSON.stringify(data));
-    } catch (error) {
-      console.warn("[ListeningStats] Failed to save polling data:", error);
+      localStorage.setItem(LS_KEYS.POLLING_DATA, JSON.stringify(data));
+    } catch (error2) {
+      warn(" Failed to save polling data:", error2);
     }
   }
   function clearPollingData() {
-    localStorage.removeItem(STORAGE_KEY2);
+    localStorage.removeItem(LS_KEYS.POLLING_DATA);
   }
   var currentTrackUri = null;
   var playStartTime = null;
@@ -996,6 +1135,10 @@ var ListeningStatsApp = (() => {
   var currentTrackDuration = 0;
   var lastProgressMs = 0;
   var progressHandler = null;
+  var lastWrittenUri = null;
+  var lastWrittenAt = 0;
+  var lastRecordedUri = null;
+  var DEDUP_WINDOW_MS = 500;
   async function handleSongChange() {
     if (currentTrackUri && playStartTime !== null) {
       const totalPlayedMs = accumulatedPlayTime + (isPlaying ? Date.now() - playStartTime : 0);
@@ -1051,6 +1194,19 @@ var ListeningStatsApp = (() => {
   }
   async function writePlayEvent(totalPlayedMs, skipped) {
     if (!previousTrackData) return;
+    if (isTrackingPaused()) {
+      log("Tracking paused \u2014 skipping write for:", previousTrackData.trackName);
+      return;
+    }
+    if (isSkipRepeatsEnabled() && previousTrackData.trackUri === lastRecordedUri) {
+      log("Skip-repeats: suppressed consecutive play for:", previousTrackData.trackName);
+      return;
+    }
+    const now = Date.now();
+    if (previousTrackData.trackUri === lastWrittenUri && now - lastWrittenAt < DEDUP_WINDOW_MS) {
+      log("Dedup: suppressed duplicate write for", previousTrackData.trackName, `(${now - lastWrittenAt}ms since last write)`);
+      return;
+    }
     if (skipped === void 0) {
       const threshold = getPlayThreshold();
       skipped = totalPlayedMs < threshold && previousTrackData.durationMs > threshold;
@@ -1072,6 +1228,11 @@ var ListeningStatsApp = (() => {
     try {
       const written = await addPlayEvent(event);
       if (written) {
+        lastWrittenUri = previousTrackData.trackUri;
+        lastWrittenAt = Date.now();
+        if (!skipped && isSkipRepeatsEnabled()) {
+          lastRecordedUri = previousTrackData.trackUri;
+        }
         const data = getPollingData();
         data.totalPlays++;
         if (skipped) {
@@ -1085,7 +1246,7 @@ var ListeningStatsApp = (() => {
         log("Dedup guard blocked duplicate event, polling data unchanged");
       }
     } catch (err) {
-      console.warn("[ListeningStats] Failed to write play event:", err);
+      warn(" Failed to write play event:", err);
     }
   }
   function handlePlayPause() {
@@ -1132,7 +1293,9 @@ var ListeningStatsApp = (() => {
     captureCurrentTrackData();
     activeSongChangeHandler = () => {
       lastProgressMs = 0;
-      handleSongChange();
+      handleSongChange().catch((e) => {
+        warn("songchange handler error:", e);
+      });
       captureCurrentTrackData();
     };
     Spicetify.Player.addEventListener("songchange", activeSongChangeHandler);
@@ -1149,6 +1312,26 @@ var ListeningStatsApp = (() => {
       playStartTime = Date.now();
       isPlaying = !playerData.isPaused;
     }
+    if (pollIntervalId !== null) clearInterval(pollIntervalId);
+    pollIntervalId = setInterval(() => {
+      if (!win.__lsSongHandler) {
+        warn("Watchdog: songchange listener lost, re-registering");
+        activeSongChangeHandler = () => {
+          lastProgressMs = 0;
+          handleSongChange().catch((e) => {
+            warn("songchange handler error:", e);
+          });
+          captureCurrentTrackData();
+        };
+        progressHandler = handleProgress;
+        Spicetify.Player.addEventListener("songchange", activeSongChangeHandler);
+        Spicetify.Player.addEventListener("onplaypause", handlePlayPause);
+        Spicetify.Player.addEventListener("onprogress", progressHandler);
+        win.__lsSongHandler = activeSongChangeHandler;
+        win.__lsPauseHandler = handlePlayPause;
+        win.__lsProgressHandler = progressHandler;
+      }
+    }, 3e5);
   }
   function destroyPoller() {
     if (activeSongChangeHandler) {
@@ -1165,12 +1348,33 @@ var ListeningStatsApp = (() => {
     win.__lsPauseHandler = null;
     win.__lsProgressHandler = null;
     lastProgressMs = 0;
+    lastWrittenUri = null;
+    lastRecordedUri = null;
+    lastWrittenAt = 0;
     if (pollIntervalId !== null) {
       clearInterval(pollIntervalId);
       pollIntervalId = null;
     }
     activeProviderType = null;
     previousTrackData = null;
+  }
+
+  // src/utils/streak.ts
+  function calculateStreak(activityDates) {
+    const dateSet = new Set(activityDates);
+    const today = /* @__PURE__ */ new Date();
+    let streak = 0;
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const key = d.toISOString().split("T")[0];
+      if (dateSet.has(key)) {
+        streak++;
+      } else if (i > 0) {
+        break;
+      }
+    }
+    return streak;
   }
 
   // src/services/providers/lastfm.ts
@@ -1435,22 +1639,198 @@ var ListeningStatsApp = (() => {
       totalScrobbles: userInfo?.totalScrobbles
     };
   }
-  function calculateStreak(activityDates) {
-    const dateSet = new Set(activityDates);
-    const today = /* @__PURE__ */ new Date();
-    let streak = 0;
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const key = d.toISOString().split("T")[0];
-      if (dateSet.has(key)) {
-        streak++;
-      } else if (i > 0) {
-        break;
+
+  // src/services/spotify-api.ts
+  init_logger();
+  init_constants();
+  var QUEUE_DELAY_MS = 300;
+  var MAX_BATCH = 50;
+  var CACHE_TTL_MS2 = 3e5;
+  var DEFAULT_BACKOFF_MS = 6e4;
+  var MAX_BACKOFF_MS = 6e5;
+  var rateLimitedUntil = 0;
+  try {
+    const stored = localStorage.getItem(`${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`);
+    if (stored) {
+      const val = parseInt(stored, 10);
+      rateLimitedUntil = Date.now() >= val ? 0 : val;
+      if (rateLimitedUntil === 0) {
+        localStorage.removeItem(`${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`);
       }
     }
-    return streak;
+  } catch (e) {
+    console.warn("[listening-stats] API cache read failed", e);
   }
+  function isApiAvailable() {
+    return Date.now() >= rateLimitedUntil;
+  }
+  function resetRateLimit() {
+    rateLimitedUntil = 0;
+    localStorage.removeItem(`${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`);
+    circuitBreaker.reset();
+  }
+  function setRateLimit(error2) {
+    let backoffMs = DEFAULT_BACKOFF_MS;
+    const retryAfterRaw = error2?.headers?.["retry-after"] ?? error2?.body?.["Retry-After"] ?? error2?.headers?.["Retry-After"];
+    if (retryAfterRaw != null) {
+      const parsed = parseInt(String(retryAfterRaw), 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        backoffMs = Math.min(parsed * 1e3, MAX_BACKOFF_MS);
+      }
+    }
+    rateLimitedUntil = Date.now() + backoffMs;
+    localStorage.setItem(
+      `${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`,
+      rateLimitedUntil.toString()
+    );
+  }
+  var cache2 = /* @__PURE__ */ new Map();
+  function getCached2(key) {
+    const entry = cache2.get(key);
+    if (!entry) return null;
+    if (Date.now() >= entry.expiresAt) {
+      cache2.delete(key);
+      return null;
+    }
+    return entry.data;
+  }
+  function setCache2(key, data) {
+    cache2.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS2 });
+  }
+  function clearApiCaches() {
+    cache2.clear();
+  }
+  var PRIORITY_ORDER = { high: 0, normal: 1, low: 2 };
+  var queue = [];
+  var draining = false;
+  var inflight = /* @__PURE__ */ new Map();
+  var circuitBreaker = new CircuitBreaker(5, 6e4);
+  function enqueueWithPriority(key, fn, priority = "normal") {
+    const existing = inflight.get(key);
+    if (existing) return existing;
+    const promise = new Promise((resolve, reject) => {
+      queue.push({ key, fn, resolve, reject, priority });
+      queue.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
+      if (!draining) drainQueue();
+    });
+    inflight.set(key, promise);
+    promise.finally(() => inflight.delete(key));
+    return promise;
+  }
+  async function drainQueue() {
+    draining = true;
+    while (queue.length > 0) {
+      if (!isApiAvailable()) {
+        const waitMs = rateLimitedUntil - Date.now();
+        await new Promise((r) => setTimeout(r, waitMs));
+      }
+      const item = queue.shift();
+      try {
+        const result = await circuitBreaker.execute(() => item.fn());
+        item.resolve(result);
+      } catch (error2) {
+        if (error2?.message?.includes("429") || error2?.status === 429 || error2?.statusCode === 429) {
+          setRateLimit(error2);
+        }
+        item.reject(error2);
+      }
+      if (queue.length > 0) {
+        await new Promise((r) => setTimeout(r, QUEUE_DELAY_MS));
+      }
+    }
+    draining = false;
+  }
+  async function apiFetch(url) {
+    const cached2 = getCached2(url);
+    if (cached2) return cached2;
+    return enqueueWithPriority(url, async () => {
+      let response;
+      try {
+        response = await Spicetify.CosmosAsync.get(url);
+      } catch (err) {
+        if (err?.status === 429 || String(err?.message || "").includes("429")) {
+          setRateLimit(err);
+          throw new ApiError(
+            err?.message || "Rate limited",
+            429,
+            true
+          );
+        }
+        const status = err?.status;
+        throw new ApiError(
+          err?.message || "API request failed",
+          status,
+          status !== void 0 && (status === 429 || status >= 500)
+        );
+      }
+      if (!response) {
+        throw new ApiError("Empty API response", void 0, false);
+      }
+      if (response.error) {
+        const status = response.error.status;
+        const message = response.error.message || `Spotify API error ${status}`;
+        if (status === 429) setRateLimit(response);
+        throw new ApiError(message, status, status === 429 || status >= 500);
+      }
+      setCache2(url, response);
+      return response;
+    });
+  }
+  var searchCache = /* @__PURE__ */ new Map();
+  try {
+    const stored = localStorage.getItem(LS_KEYS.SEARCH_CACHE);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      for (const [k, v] of Object.entries(parsed)) {
+        searchCache.set(k, v);
+      }
+    }
+  } catch (e) {
+    console.warn("[listening-stats] Search cache read failed", e);
+  }
+  async function getArtistsBatch(artistIds) {
+    const unique = [...new Set(artistIds)].filter(Boolean);
+    if (unique.length === 0) return [];
+    const results = [];
+    for (let i = 0; i < unique.length; i += MAX_BATCH) {
+      const chunk = unique.slice(i, i + MAX_BATCH);
+      const ids = chunk.join(",");
+      try {
+        const response = await apiFetch(
+          `https://api.spotify.com/v1/artists?ids=${ids}`
+        );
+        if (response?.artists) {
+          results.push(...response.artists.filter(Boolean));
+        }
+      } catch (error2) {
+        warn(" Artist batch fetch failed:", error2);
+      }
+    }
+    return results;
+  }
+  var artistCoalescer = createBatchCoalescer(
+    async (ids) => {
+      const results = /* @__PURE__ */ new Map();
+      for (let i = 0; i < ids.length; i += MAX_BATCH) {
+        const chunk = ids.slice(i, i + MAX_BATCH);
+        try {
+          const response = await apiFetch(
+            `https://api.spotify.com/v1/artists?ids=${chunk.join(",")}`
+          );
+          if (response?.artists) {
+            for (const artist of response.artists.filter(Boolean)) {
+              if (artist.id) results.set(artist.id, artist);
+            }
+          }
+        } catch (error2) {
+          warn(" Artist batch fetch failed:", error2);
+        }
+      }
+      return results;
+    },
+    50,
+    MAX_BATCH
+  );
 
   // src/services/providers/local.ts
   init_storage();
@@ -1526,6 +1906,7 @@ var ListeningStatsApp = (() => {
       if (existing) {
         existing.count++;
         existing.totalMs += e.playedMs;
+        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
       } else {
         trackMap.set(e.trackUri, {
           trackUri: e.trackUri,
@@ -1533,11 +1914,17 @@ var ListeningStatsApp = (() => {
           artistName: e.artistName,
           albumArt: e.albumArt,
           count: 1,
-          totalMs: e.playedMs
+          totalMs: e.playedMs,
+          lastPlayedAt: e.startedAt
         });
       }
     }
-    const topTracks = Array.from(trackMap.values()).sort((a, b) => b.count - a.count).slice(0, 10).map((t, i) => ({
+    const topTracks = Array.from(trackMap.values()).sort((a, b) => {
+      if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
+      if (b.count !== a.count) return b.count - a.count;
+      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      return a.trackUri.localeCompare(b.trackUri);
+    }).slice(0, 10).map((t, i) => ({
       trackUri: t.trackUri,
       trackName: t.trackName,
       artistName: t.artistName,
@@ -1552,38 +1939,79 @@ var ListeningStatsApp = (() => {
       const existing = artistMap.get(key);
       if (existing) {
         existing.count++;
+        existing.totalMs += e.playedMs;
+        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
       } else {
         artistMap.set(key, {
           artistUri: e.artistUri,
           artistName: e.artistName,
-          count: 1
+          count: 1,
+          totalMs: e.playedMs,
+          lastPlayedAt: e.startedAt
         });
       }
     }
-    const topArtistAggregated = Array.from(artistMap.values()).sort((a, b) => b.count - a.count).slice(0, 10);
+    const topArtistAggregated = Array.from(artistMap.values()).sort((a, b) => {
+      if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
+      if (b.count !== a.count) return b.count - a.count;
+      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      const aKey = a.artistUri || a.artistName;
+      const bKey = b.artistUri || b.artistName;
+      return aKey.localeCompare(bKey);
+    }).slice(0, 10);
     const topArtists = topArtistAggregated.map((a, i) => ({
       artistUri: a.artistUri,
       artistName: a.artistName,
+      artistImage: void 0,
       rank: i + 1,
       genres: [],
       playCount: a.count
     }));
+    const artistIds = topArtists.map((a) => Spicetify.URI.from(a.artistUri)?.id).filter((id) => !!id);
+    if (artistIds.length > 0) {
+      try {
+        const artists = await getArtistsBatch(artistIds);
+        const imageMap = /* @__PURE__ */ new Map();
+        for (const artist of artists) {
+          if (artist.id && artist.images?.[0]?.url) {
+            imageMap.set(artist.id, artist.images[0].url);
+          }
+        }
+        for (const a of topArtists) {
+          const id = Spicetify.URI.from(a.artistUri)?.id;
+          if (id && imageMap.has(id)) {
+            a.artistImage = imageMap.get(id);
+          }
+        }
+      } catch (e) {
+        console.warn("[listening-stats] Artist enrichment failed:", e);
+      }
+    }
     const albumMap = /* @__PURE__ */ new Map();
     for (const e of completedEvents) {
       const existing = albumMap.get(e.albumUri);
       if (existing) {
         existing.trackCount++;
+        existing.totalMs += e.playedMs;
+        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
       } else {
         albumMap.set(e.albumUri, {
           albumUri: e.albumUri,
           albumName: e.albumName || "Unknown Album",
           artistName: e.artistName,
           albumArt: e.albumArt,
-          trackCount: 1
+          trackCount: 1,
+          totalMs: e.playedMs,
+          lastPlayedAt: e.startedAt
         });
       }
     }
-    const topAlbums = Array.from(albumMap.values()).sort((a, b) => b.trackCount - a.trackCount).slice(0, 10).map((a) => ({
+    const topAlbums = Array.from(albumMap.values()).sort((a, b) => {
+      if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
+      if (b.trackCount !== a.trackCount) return b.trackCount - a.trackCount;
+      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      return a.albumUri.localeCompare(b.albumUri);
+    }).slice(0, 10).map((a) => ({
       ...a,
       playCount: a.trackCount
     }));
@@ -1638,78 +2066,63 @@ var ListeningStatsApp = (() => {
       recentTracks,
       genres,
       topGenres,
-      streakDays: calculateStreak2(allDates),
+      streakDays: calculateStreak(allDates),
       newArtistsCount: 0,
       skipRate: events.length > 0 ? skipEvents / events.length : 0,
       listenedDays: periodDates.size,
       lastfmConnected: false
     };
   }
-  function calculateStreak2(activityDates) {
-    const dateSet = new Set(activityDates);
-    const today = /* @__PURE__ */ new Date();
-    let streak = 0;
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const key = d.toISOString().split("T")[0];
-      if (dateSet.has(key)) {
-        streak++;
-      } else if (i > 0) {
-        break;
-      }
-    }
-    return streak;
-  }
 
   // src/services/statsfm.ts
+  init_constants();
   var API_BASE = "https://api.stats.fm/api/v1";
-  var STORAGE_KEY3 = "listening-stats:statsfm";
-  var CACHE_TTL_MS2 = 12e4;
+  var CACHE_TTL_MS3 = 12e4;
   var configCache2 = void 0;
   function getConfig2() {
     if (configCache2 !== void 0) return configCache2;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY3);
+      const stored = localStorage.getItem(LS_KEYS.STATSFM_CONFIG);
       if (stored) {
         configCache2 = JSON.parse(stored);
         return configCache2;
       }
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] stats.fm config read failed", e);
     }
     configCache2 = null;
     return null;
   }
   function saveConfig2(config) {
     configCache2 = config;
-    localStorage.setItem(STORAGE_KEY3, JSON.stringify(config));
+    localStorage.setItem(LS_KEYS.STATSFM_CONFIG, JSON.stringify(config));
   }
   function clearConfig2() {
     configCache2 = null;
-    localStorage.removeItem(STORAGE_KEY3);
+    localStorage.removeItem(LS_KEYS.STATSFM_CONFIG);
   }
   function isConnected2() {
     const config = getConfig2();
     return !!config?.username;
   }
-  var cache2 = /* @__PURE__ */ new Map();
-  function getCached2(key) {
-    const entry = cache2.get(key);
+  var cache3 = /* @__PURE__ */ new Map();
+  function getCached3(key) {
+    const entry = cache3.get(key);
     if (!entry || Date.now() >= entry.expiresAt) {
-      cache2.delete(key);
+      cache3.delete(key);
       return null;
     }
     return entry.data;
   }
-  function setCache2(key, data) {
-    cache2.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS2 });
+  function setCache3(key, data) {
+    cache3.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS3 });
   }
   function clearStatsfmCache() {
-    cache2.clear();
+    cache3.clear();
   }
   async function statsfmFetch(path) {
     const url = `${API_BASE}${path}`;
-    const cached2 = getCached2(url);
+    const cached2 = getCached3(url);
     if (cached2) return cached2;
     const response = await fetch(url);
     if (!response.ok) {
@@ -1720,7 +2133,7 @@ var ListeningStatsApp = (() => {
       throw new Error(`stats.fm API error: ${response.status}`);
     }
     const data = await response.json();
-    setCache2(url, data);
+    setCache3(url, data);
     return data;
   }
   async function validateUser2(username) {
@@ -1762,7 +2175,8 @@ var ListeningStatsApp = (() => {
         `/users/${getUsername()}/top/albums?range=${range}&limit=${limit}&orderBy=COUNT`
       );
       return data.items || [];
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] stats.fm API call failed", e);
       return [];
     }
   }
@@ -1806,7 +2220,8 @@ var ListeningStatsApp = (() => {
         saveConfig2({ ...config, isPlus: info.isPlus });
         return true;
       }
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] stats.fm date parsing failed", e);
     }
     return false;
   }
@@ -1991,52 +2406,37 @@ var ListeningStatsApp = (() => {
       recentTracks,
       genres,
       topGenres,
-      streakDays: calculateStreak3(activityDates),
+      streakDays: calculateStreak(activityDates),
       newArtistsCount: 0,
       skipRate: pollingData.totalPlays > 0 ? pollingData.skipEvents / pollingData.totalPlays : 0,
       listenedDays: activityDates.length,
       lastfmConnected: false
     };
   }
-  function calculateStreak3(activityDates) {
-    const dateSet = new Set(activityDates);
-    const today = /* @__PURE__ */ new Date();
-    let streak = 0;
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const key = d.toISOString().split("T")[0];
-      if (dateSet.has(key)) {
-        streak++;
-      } else if (i > 0) {
-        break;
-      }
-    }
-    return streak;
-  }
 
   // src/services/providers/index.ts
-  var STORAGE_KEY4 = "listening-stats:provider";
+  init_constants();
   var activeProvider = null;
   function getSelectedProviderType() {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY4);
+      const stored = localStorage.getItem(LS_KEYS.PROVIDER);
       if (stored === "local" || stored === "lastfm" || stored === "statsfm") {
         return stored;
       }
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] Provider selection read failed", e);
     }
     return null;
   }
   function setSelectedProviderType(type) {
-    localStorage.setItem(STORAGE_KEY4, type);
+    localStorage.setItem(LS_KEYS.PROVIDER, type);
   }
   function clearProviderSelection() {
     if (activeProvider) {
       activeProvider.destroy();
       activeProvider = null;
     }
-    localStorage.removeItem(STORAGE_KEY4);
+    localStorage.removeItem(LS_KEYS.PROVIDER);
   }
   function getActiveProvider() {
     return activeProvider;
@@ -2115,13 +2515,14 @@ var ListeningStatsApp = (() => {
   }
 
   // src/services/updater.ts
+  init_logger();
+  init_constants();
   var GITHUB_REPO = "Xndr2/listening-stats";
-  var STORAGE_KEY5 = "listening-stats:lastUpdateCheck";
   var INSTALL_CMD_LINUX = `curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh | bash`;
   var INSTALL_CMD_WINDOWS = `irm https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.ps1 | iex`;
   function getCurrentVersion() {
     try {
-      return "1.3.35";
+      return "1.3.67";
     } catch {
       return "0.0.0";
     }
@@ -2145,7 +2546,7 @@ var ListeningStatsApp = (() => {
       );
       const available = isNewerVersion(latestVersion, currentVersion);
       localStorage.setItem(
-        STORAGE_KEY5,
+        LS_KEYS.LAST_UPDATE_CHECK,
         JSON.stringify({
           checkedAt: Date.now(),
           latestVersion,
@@ -2160,8 +2561,8 @@ var ListeningStatsApp = (() => {
         downloadUrl: distAsset?.browser_download_url || null,
         releaseUrl: release.html_url
       };
-    } catch (error) {
-      console.error("[ListeningStats] Update check failed:", error);
+    } catch (err) {
+      error("Update check failed:", err);
       return {
         available: false,
         currentVersion,
@@ -2190,29 +2591,17 @@ var ListeningStatsApp = (() => {
   async function copyInstallCommand() {
     const cmd = getInstallCommand();
     try {
-      await navigator.clipboard.writeText(cmd);
+      await Spicetify.Platform.ClipboardAPI.copy(cmd);
       return true;
     } catch (e) {
-      try {
-        const textarea = document.createElement("textarea");
-        textarea.value = cmd;
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textarea);
-        return true;
-      } catch {
-        return false;
-      }
+      console.warn("[listening-stats] Clipboard copy failed", e);
+      return false;
     }
   }
 
   // src/app/format.ts
-  var numberFormatter = new Intl.NumberFormat();
   function formatNumber(n) {
-    return numberFormatter.format(n);
+    return Spicetify.Locale?.formatNumber?.(n) ?? n.toLocaleString();
   }
   function formatHour(h) {
     const { use24HourTime } = getPreferences();
@@ -2225,7 +2614,7 @@ var ListeningStatsApp = (() => {
   }
   function renderMarkdown(text) {
     if (!text) return "";
-    let html = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    let html = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     const codeBlocks = [];
     html = html.replace(/`([^`]+)`/g, (_match, code) => {
       const idx = codeBlocks.length;
@@ -2253,12 +2642,12 @@ var ListeningStatsApp = (() => {
         processed.push(`<h4>${line.replace(/^##\s+/, "")}</h4>`);
         continue;
       }
-      if (line.match(/^[\-\*]\s+(.+)$/)) {
+      if (line.match(/^\s*[\-\*]\s+(.+)$/)) {
         if (!inList) {
           processed.push("<ul>");
           inList = true;
         }
-        processed.push(`<li>${line.replace(/^[\-\*]\s+/, "")}</li>`);
+        processed.push(`<li>${line.replace(/^\s*[\-\*]\s+/, "")}</li>`);
         continue;
       }
       if (inList) {
@@ -2458,179 +2847,72 @@ var ListeningStatsApp = (() => {
     downloadFile(lines.join("\n"), filename, "text/csv");
   }
 
-  // src/services/spotify-api.ts
-  var STORAGE_PREFIX = "listening-stats:";
-  var QUEUE_DELAY_MS = 300;
-  var MAX_BATCH = 50;
-  var CACHE_TTL_MS3 = 3e5;
-  var DEFAULT_BACKOFF_MS = 6e4;
-  var MAX_BACKOFF_MS = 6e5;
-  var rateLimitedUntil = 0;
-  try {
-    const stored = localStorage.getItem(`${STORAGE_PREFIX}rateLimitedUntil`);
-    if (stored) {
-      const val = parseInt(stored, 10);
-      rateLimitedUntil = Date.now() >= val ? 0 : val;
-      if (rateLimitedUntil === 0) {
-        localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
-      }
-    }
-  } catch {
-  }
-  function isApiAvailable() {
-    return Date.now() >= rateLimitedUntil;
-  }
-  function resetRateLimit() {
-    rateLimitedUntil = 0;
-    localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
-    circuitBreaker.reset();
-  }
-  function setRateLimit(error) {
-    let backoffMs = DEFAULT_BACKOFF_MS;
-    const retryAfterRaw = error?.headers?.["retry-after"] ?? error?.body?.["Retry-After"] ?? error?.headers?.["Retry-After"];
-    if (retryAfterRaw != null) {
-      const parsed = parseInt(String(retryAfterRaw), 10);
-      if (!isNaN(parsed) && parsed > 0) {
-        backoffMs = Math.min(parsed * 1e3, MAX_BACKOFF_MS);
-      }
-    }
-    rateLimitedUntil = Date.now() + backoffMs;
-    localStorage.setItem(
-      `${STORAGE_PREFIX}rateLimitedUntil`,
-      rateLimitedUntil.toString()
-    );
-  }
-  var cache3 = /* @__PURE__ */ new Map();
-  function getCached3(key) {
-    const entry = cache3.get(key);
-    if (!entry) return null;
-    if (Date.now() >= entry.expiresAt) {
-      cache3.delete(key);
-      return null;
-    }
-    return entry.data;
-  }
-  function setCache3(key, data) {
-    cache3.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS3 });
-  }
-  function clearApiCaches() {
-    cache3.clear();
-  }
-  var PRIORITY_ORDER = { high: 0, normal: 1, low: 2 };
-  var queue = [];
-  var draining = false;
-  var inflight = /* @__PURE__ */ new Map();
-  var circuitBreaker = new CircuitBreaker(5, 6e4);
-  function enqueueWithPriority(key, fn, priority = "normal") {
-    const existing = inflight.get(key);
-    if (existing) return existing;
-    const promise = new Promise((resolve, reject) => {
-      queue.push({ key, fn, resolve, reject, priority });
-      queue.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
-      if (!draining) drainQueue();
-    });
-    inflight.set(key, promise);
-    promise.finally(() => inflight.delete(key));
-    return promise;
-  }
-  async function drainQueue() {
-    draining = true;
-    while (queue.length > 0) {
-      if (!isApiAvailable()) {
-        const waitMs = rateLimitedUntil - Date.now();
-        await new Promise((r) => setTimeout(r, waitMs));
-      }
-      const item = queue.shift();
-      try {
-        const result = await circuitBreaker.execute(() => item.fn());
-        item.resolve(result);
-      } catch (error) {
-        if (error?.message?.includes("429") || error?.status === 429 || error?.statusCode === 429) {
-          setRateLimit(error);
-        }
-        item.reject(error);
-      }
-      if (queue.length > 0) {
-        await new Promise((r) => setTimeout(r, QUEUE_DELAY_MS));
-      }
-    }
-    draining = false;
-  }
-  async function apiFetch(url) {
-    const cached2 = getCached3(url);
-    if (cached2) return cached2;
-    return enqueueWithPriority(url, async () => {
-      let response;
-      try {
-        response = await Spicetify.CosmosAsync.get(url);
-      } catch (err) {
-        if (err?.status === 429 || String(err?.message || "").includes("429")) {
-          setRateLimit(err);
-          throw new ApiError(
-            err?.message || "Rate limited",
-            429,
-            true
-          );
-        }
-        const status = err?.status;
-        throw new ApiError(
-          err?.message || "API request failed",
-          status,
-          status !== void 0 && (status === 429 || status >= 500)
-        );
-      }
-      if (!response) {
-        throw new ApiError("Empty API response", void 0, false);
-      }
-      if (response.error) {
-        const status = response.error.status;
-        const message = response.error.message || `Spotify API error ${status}`;
-        if (status === 429) setRateLimit(response);
-        throw new ApiError(message, status, status === 429 || status >= 500);
-      }
-      setCache3(url, response);
-      return response;
-    });
-  }
-  var SEARCH_CACHE_KEY = "listening-stats:searchCache";
-  var searchCache = /* @__PURE__ */ new Map();
-  try {
-    const stored = localStorage.getItem(SEARCH_CACHE_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      for (const [k, v] of Object.entries(parsed)) {
-        searchCache.set(k, v);
-      }
-    }
-  } catch {
-  }
-  var artistCoalescer = createBatchCoalescer(
-    async (ids) => {
-      const results = /* @__PURE__ */ new Map();
-      for (let i = 0; i < ids.length; i += MAX_BATCH) {
-        const chunk = ids.slice(i, i + MAX_BATCH);
-        try {
-          const response = await apiFetch(
-            `https://api.spotify.com/v1/artists?ids=${chunk.join(",")}`
-          );
-          if (response?.artists) {
-            for (const artist of response.artists.filter(Boolean)) {
-              if (artist.id) results.set(artist.id, artist);
-            }
-          }
-        } catch (error) {
-          console.warn("[ListeningStats] Artist batch fetch failed:", error);
-        }
-      }
-      return results;
-    },
-    50,
-    MAX_BATCH
-  );
-
   // src/app/components/SettingsPanel.tsx
   init_storage();
-  var { useState } = Spicetify.React;
+  init_logger();
+  init_constants();
+  var { useState, useReducer } = Spicetify.React;
+  function providerFormReducer(state, action) {
+    switch (action.type) {
+      case "TOGGLE_PICKER":
+        return { ...state, showProviderPicker: !state.showProviderPicker };
+      case "CLOSE_PICKER":
+        return { ...state, showProviderPicker: false };
+      case "SET_LFM_FIELD":
+        return { ...state, [action.field === "username" ? "lfmUsername" : "lfmApiKey"]: action.value };
+      case "LFM_VALIDATE_START":
+        return { ...state, lfmValidating: true, lfmError: "" };
+      case "LFM_VALIDATE_ERROR":
+        return { ...state, lfmValidating: false, lfmError: action.error };
+      case "LFM_VALIDATE_SUCCESS":
+        return { ...state, lfmValidating: false, lfmError: "", lfmUsername: "", lfmApiKey: "" };
+      case "SET_SFM_USERNAME":
+        return { ...state, sfmUsername: action.value };
+      case "SFM_VALIDATE_START":
+        return { ...state, sfmValidating: true, sfmError: "" };
+      case "SFM_VALIDATE_ERROR":
+        return { ...state, sfmValidating: false, sfmError: action.error };
+      case "SFM_VALIDATE_SUCCESS":
+        return { ...state, sfmValidating: false, sfmError: "", sfmUsername: "" };
+      default:
+        return state;
+    }
+  }
+  function displayPrefsReducer(state, action) {
+    switch (action.type) {
+      case "SET_USE_24H":
+        return { ...state, use24h: action.value };
+      case "SET_ITEM_COUNT":
+        return { ...state, itemCount: action.value };
+      case "SET_GENRE_COUNT":
+        return { ...state, genreCount: action.value };
+      case "TOGGLE_SECTION": {
+        const isHidden = state.hiddenSections.includes(action.sectionId);
+        return {
+          ...state,
+          hiddenSections: isHidden ? state.hiddenSections.filter((s) => s !== action.sectionId) : [...state.hiddenSections, action.sectionId]
+        };
+      }
+      case "RESET_DISPLAY":
+        return { ...state, hiddenSections: [], itemCount: action.itemCount, genreCount: action.genreCount };
+      default:
+        return state;
+    }
+  }
+  function advancedReducer(state, action) {
+    switch (action.type) {
+      case "SET_LOGGING":
+        return { ...state, loggingOn: action.value };
+      case "SET_TRACKING_PAUSED":
+        return { ...state, trackingPaused: action.value };
+      case "SET_SKIP_REPEATS":
+        return { ...state, skipRepeats: action.value };
+      case "SET_DEDUP_RUNNING":
+        return { ...state, dedupRunning: action.value };
+      default:
+        return state;
+    }
+  }
   function SettingsCategory({
     title,
     children,
@@ -2661,65 +2943,91 @@ var ListeningStatsApp = (() => {
     stats,
     period
   }) {
+    const { Toggle } = Spicetify.ReactComponent;
     const currentProvider = getSelectedProviderType();
-    const [showProviderPicker, setShowProviderPicker] = useState(false);
-    const [lfmUsername, setLfmUsername] = useState("");
-    const [lfmApiKey, setLfmApiKey] = useState("");
-    const [lfmValidating, setLfmValidating] = useState(false);
-    const [lfmError, setLfmError] = useState("");
+    const [provForm, dispatchProv] = useReducer(providerFormReducer, {
+      showProviderPicker: false,
+      lfmUsername: "",
+      lfmApiKey: "",
+      lfmValidating: false,
+      lfmError: "",
+      sfmUsername: "",
+      sfmValidating: false,
+      sfmError: ""
+    });
+    const prefs = getPreferences();
+    const [display, dispatchDisplay] = useReducer(displayPrefsReducer, {
+      use24h: prefs.use24HourTime,
+      itemCount: prefs.itemsPerSection,
+      genreCount: prefs.genresPerSection,
+      hiddenSections: prefs.hiddenSections
+    });
+    const [advanced, dispatchAdv] = useReducer(advancedReducer, {
+      loggingOn: isLoggingEnabled(),
+      trackingPaused: isTrackingPaused(),
+      skipRepeats: isSkipRepeatsEnabled(),
+      dedupRunning: false
+    });
     const lfmConnected = isConnected();
     const lfmConfig = getConfig();
-    const [sfmUsername, setSfmUsername] = useState("");
-    const [sfmValidating, setSfmValidating] = useState(false);
-    const [sfmError, setSfmError] = useState("");
     const sfmConnected = isConnected2();
     const sfmConfig = getConfig2();
-    const [loggingOn, setLoggingOn] = useState(isLoggingEnabled());
-    const prefs = getPreferences();
-    const [use24h, setUse24h] = useState(prefs.use24HourTime);
-    const [itemCount, setItemCount] = useState(prefs.itemsPerSection);
-    const [genreCount, setGenreCount] = useState(prefs.genresPerSection);
-    const [hiddenSections, setHiddenSections] = useState(prefs.hiddenSections);
     const switchProvider = (type) => {
       activateProvider(type);
-      setShowProviderPicker(false);
+      dispatchProv({ type: "CLOSE_PICKER" });
       onProviderChanged?.();
     };
+    const handleCleanDuplicates = async () => {
+      dispatchAdv({ type: "SET_DEDUP_RUNNING", value: true });
+      try {
+        const result = await deduplicateExistingEvents();
+        if (result.removed > 0) {
+          Spicetify.showNotification(
+            `Removed ${result.removed} duplicate entries across ${result.affectedTracks} tracks`
+          );
+        } else {
+          Spicetify.showNotification("No duplicates found");
+        }
+      } catch (err) {
+        error("Clean duplicates failed:", err);
+        Spicetify.showNotification("Failed to clean duplicates");
+      } finally {
+        dispatchAdv({ type: "SET_DEDUP_RUNNING", value: false });
+        clearStatsCache();
+        onRefresh();
+      }
+    };
     const handleLastfmSwitch = async () => {
-      if (!lfmUsername.trim() || !lfmApiKey.trim()) {
-        setLfmError("Both fields are required");
+      if (!provForm.lfmUsername.trim() || !provForm.lfmApiKey.trim()) {
+        dispatchProv({ type: "LFM_VALIDATE_ERROR", error: "Both fields are required" });
         return;
       }
-      setLfmValidating(true);
-      setLfmError("");
+      dispatchProv({ type: "LFM_VALIDATE_START" });
       try {
         const info = await validateUser(
-          lfmUsername.trim(),
-          lfmApiKey.trim()
+          provForm.lfmUsername.trim(),
+          provForm.lfmApiKey.trim()
         );
-        saveConfig({ username: info.username, apiKey: lfmApiKey.trim() });
+        saveConfig({ username: info.username, apiKey: provForm.lfmApiKey.trim() });
+        dispatchProv({ type: "LFM_VALIDATE_SUCCESS" });
         switchProvider("lastfm");
       } catch (err) {
-        setLfmError(err.message || "Connection failed");
-      } finally {
-        setLfmValidating(false);
+        dispatchProv({ type: "LFM_VALIDATE_ERROR", error: err.message || "Connection failed" });
       }
     };
     const handleStatsfmSwitch = async () => {
-      if (!sfmUsername.trim()) {
-        setSfmError("Username is required");
+      if (!provForm.sfmUsername.trim()) {
+        dispatchProv({ type: "SFM_VALIDATE_ERROR", error: "Username is required" });
         return;
       }
-      setSfmValidating(true);
-      setSfmError("");
+      dispatchProv({ type: "SFM_VALIDATE_START" });
       try {
-        const info = await validateUser2(sfmUsername.trim());
+        const info = await validateUser2(provForm.sfmUsername.trim());
         saveConfig2({ username: info.customId, isPlus: info.isPlus });
+        dispatchProv({ type: "SFM_VALIDATE_SUCCESS" });
         switchProvider("statsfm");
       } catch (err) {
-        setSfmError(err.message || "Connection failed");
-      } finally {
-        setSfmValidating(false);
+        dispatchProv({ type: "SFM_VALIDATE_ERROR", error: err.message || "Connection failed" });
       }
     };
     const handleSfmDisconnect = () => {
@@ -2745,10 +3053,10 @@ var ListeningStatsApp = (() => {
       "button",
       {
         className: "footer-btn",
-        onClick: () => setShowProviderPicker(!showProviderPicker)
+        onClick: () => dispatchProv({ type: "TOGGLE_PICKER" })
       },
       "Change"
-    )), !showProviderPicker && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "provider-guides-row" }, currentProvider !== "statsfm" && !sfmConnected && /* @__PURE__ */ Spicetify.React.createElement(
+    )), !provForm.showProviderPicker && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "provider-guides-row" }, currentProvider !== "statsfm" && !sfmConnected && /* @__PURE__ */ Spicetify.React.createElement(
       "a",
       {
         className: "provider-setup-link",
@@ -2770,7 +3078,7 @@ var ListeningStatsApp = (() => {
       "Last.fm Setup Guide",
       " ",
       /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.external } })
-    )), showProviderPicker && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-provider-picker" }, sfmConnected || currentProvider === "statsfm" ? /* @__PURE__ */ Spicetify.React.createElement(
+    )), provForm.showProviderPicker && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-provider-picker" }, sfmConnected || currentProvider === "statsfm" ? /* @__PURE__ */ Spicetify.React.createElement(
       "div",
       {
         className: `provider-option ${currentProvider === "statsfm" ? "active" : ""}`,
@@ -2799,18 +3107,18 @@ var ListeningStatsApp = (() => {
         className: "lastfm-input",
         type: "text",
         placeholder: "stats.fm username",
-        value: sfmUsername,
-        onChange: (e) => setSfmUsername(e.target.value),
-        disabled: sfmValidating
+        value: provForm.sfmUsername,
+        onChange: (e) => dispatchProv({ type: "SET_SFM_USERNAME", value: e.target.value }),
+        disabled: provForm.sfmValidating
       }
-    ), sfmError && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "lastfm-error" }, sfmError), /* @__PURE__ */ Spicetify.React.createElement(
+    ), provForm.sfmError && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "lastfm-error" }, provForm.sfmError), /* @__PURE__ */ Spicetify.React.createElement(
       "button",
       {
         className: "footer-btn primary",
         onClick: handleStatsfmSwitch,
-        disabled: sfmValidating
+        disabled: provForm.sfmValidating
       },
-      sfmValidating ? "Connecting..." : "Connect & Switch"
+      provForm.sfmValidating ? "Connecting..." : "Connect & Switch"
     )), /* @__PURE__ */ Spicetify.React.createElement(
       "a",
       {
@@ -2851,9 +3159,9 @@ var ListeningStatsApp = (() => {
         className: "lastfm-input",
         type: "text",
         placeholder: "Username",
-        value: lfmUsername,
-        onChange: (e) => setLfmUsername(e.target.value),
-        disabled: lfmValidating
+        value: provForm.lfmUsername,
+        onChange: (e) => dispatchProv({ type: "SET_LFM_FIELD", field: "username", value: e.target.value }),
+        disabled: provForm.lfmValidating
       }
     ), /* @__PURE__ */ Spicetify.React.createElement(
       "input",
@@ -2861,18 +3169,18 @@ var ListeningStatsApp = (() => {
         className: "lastfm-input",
         type: "text",
         placeholder: "API key",
-        value: lfmApiKey,
-        onChange: (e) => setLfmApiKey(e.target.value),
-        disabled: lfmValidating
+        value: provForm.lfmApiKey,
+        onChange: (e) => dispatchProv({ type: "SET_LFM_FIELD", field: "apiKey", value: e.target.value }),
+        disabled: provForm.lfmValidating
       }
-    ), lfmError && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "lastfm-error" }, lfmError), /* @__PURE__ */ Spicetify.React.createElement(
+    ), provForm.lfmError && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "lastfm-error" }, provForm.lfmError), /* @__PURE__ */ Spicetify.React.createElement(
       "button",
       {
         className: "footer-btn primary",
         onClick: handleLastfmSwitch,
-        disabled: lfmValidating
+        disabled: provForm.lfmValidating
       },
-      lfmValidating ? "Connecting..." : "Connect & Switch"
+      provForm.lfmValidating ? "Connecting..." : "Connect & Switch"
     )), /* @__PURE__ */ Spicetify.React.createElement(
       "a",
       {
@@ -2925,24 +3233,22 @@ var ListeningStatsApp = (() => {
       },
       "Disconnect"
     )))), /* @__PURE__ */ Spicetify.React.createElement(SettingsCategory, { title: "Display" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-info" }, /* @__PURE__ */ Spicetify.React.createElement("h4", { className: "settings-section-title" }, "24-hour time"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "settings-toggle-desc" }, "Show times as 14:00 instead of 2pm")), /* @__PURE__ */ Spicetify.React.createElement(
-      "button",
+      Toggle,
       {
-        className: `settings-toggle ${use24h ? "active" : ""}`,
-        onClick: () => {
-          const next = !use24h;
+        value: display.use24h,
+        onSelected: (next) => {
           setPreference("use24HourTime", next);
-          setUse24h(next);
+          dispatchDisplay({ type: "SET_USE_24H", value: next });
         }
-      },
-      /* @__PURE__ */ Spicetify.React.createElement("span", { className: "settings-toggle-knob" })
+      }
     )), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-info" }, /* @__PURE__ */ Spicetify.React.createElement("h4", { className: "settings-section-title" }, "Items per section"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "settings-toggle-desc" }, "Number of tracks, artists, and albums shown in each list")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-item-count-picker" }, [3, 5, 10].map((n) => /* @__PURE__ */ Spicetify.React.createElement(
       "button",
       {
         key: n,
-        className: `settings-count-btn ${itemCount === n ? "active" : ""}`,
+        className: `settings-count-btn ${display.itemCount === n ? "active" : ""}`,
         onClick: () => {
           setPreference("itemsPerSection", n);
-          setItemCount(n);
+          dispatchDisplay({ type: "SET_ITEM_COUNT", value: n });
         }
       },
       n
@@ -2950,10 +3256,10 @@ var ListeningStatsApp = (() => {
       "button",
       {
         key: n,
-        className: `settings-count-btn ${genreCount === n ? "active" : ""}`,
+        className: `settings-count-btn ${display.genreCount === n ? "active" : ""}`,
         onClick: () => {
           setPreference("genresPerSection", n);
-          setGenreCount(n);
+          dispatchDisplay({ type: "SET_GENRE_COUNT", value: n });
         }
       },
       n
@@ -2964,18 +3270,17 @@ var ListeningStatsApp = (() => {
       { id: "activity", label: "Activity Chart" },
       { id: "recent", label: "Recently Played" }
     ].map(({ id, label }) => {
-      const isHidden = hiddenSections.includes(id);
+      const isHidden = display.hiddenSections.includes(id);
       return /* @__PURE__ */ Spicetify.React.createElement("div", { key: id, className: "settings-toggle-row compact" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "settings-vis-label" }, label), /* @__PURE__ */ Spicetify.React.createElement(
-        "button",
+        Toggle,
         {
-          className: `settings-toggle ${!isHidden ? "active" : ""}`,
-          onClick: () => {
-            const next = isHidden ? hiddenSections.filter((s) => s !== id) : [...hiddenSections, id];
-            setPreference("hiddenSections", next);
-            setHiddenSections(next);
+          value: !isHidden,
+          onSelected: () => {
+            const newHidden = display.hiddenSections.includes(id) ? display.hiddenSections.filter((s) => s !== id) : [...display.hiddenSections, id];
+            setPreference("hiddenSections", newHidden);
+            dispatchDisplay({ type: "TOGGLE_SECTION", sectionId: id });
           }
-        },
-        /* @__PURE__ */ Spicetify.React.createElement("span", { className: "settings-toggle-knob" })
+        }
       ));
     }))), /* @__PURE__ */ Spicetify.React.createElement(SettingsCategory, { title: "Layout" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-info" }, /* @__PURE__ */ Spicetify.React.createElement("h4", { className: "settings-section-title" }, "Card Order"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "settings-toggle-desc" }, "Drag section headers on the main page to reorder cards.")), /* @__PURE__ */ Spicetify.React.createElement(
       "button",
@@ -2983,14 +3288,12 @@ var ListeningStatsApp = (() => {
         className: "footer-btn",
         onClick: () => {
           window.dispatchEvent(
-            new CustomEvent("listening-stats:reset-layout")
+            new CustomEvent(EVENTS.RESET_LAYOUT)
           );
           setPreference("hiddenSections", []);
-          setHiddenSections([]);
           setPreference("itemsPerSection", 5);
-          setItemCount(5);
           setPreference("genresPerSection", 5);
-          setGenreCount(5);
+          dispatchDisplay({ type: "RESET_DISPLAY", itemCount: 5, genreCount: 5 });
           Spicetify.showNotification("Layout reset to default");
         }
       },
@@ -3002,26 +3305,44 @@ var ListeningStatsApp = (() => {
         onClick: () => {
           onClose?.();
           setTimeout(() => {
-            window.dispatchEvent(new CustomEvent("listening-stats:start-tour"));
+            window.dispatchEvent(new CustomEvent(EVENTS.START_TOUR));
           }, 300);
         }
       },
       "Restart Tour"
     ))), /* @__PURE__ */ Spicetify.React.createElement(SettingsCategory, { title: "Advanced" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-info" }, /* @__PURE__ */ Spicetify.React.createElement("h4", { className: "settings-section-title" }, "Console Logging"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "settings-toggle-desc" }, "Log tracked songs, skips, and playback events to the browser console (F12).")), /* @__PURE__ */ Spicetify.React.createElement(
-      "button",
+      Toggle,
       {
-        className: `settings-toggle ${loggingOn ? "active" : ""}`,
-        onClick: () => {
-          const next = !loggingOn;
+        value: advanced.loggingOn,
+        onSelected: (next) => {
           setLoggingEnabled(next);
-          setLoggingOn(next);
+          dispatchAdv({ type: "SET_LOGGING", value: next });
           Spicetify.showNotification(
             next ? "Logging enabled. Open DevTools (Ctrl + Shift + I) to see output" : "Logging disabled"
           );
         }
-      },
-      /* @__PURE__ */ Spicetify.React.createElement("span", { className: "settings-toggle-knob" })
-    )), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-actions-row" }, /* @__PURE__ */ Spicetify.React.createElement(
+      }
+    )), currentProvider === "local" && /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-info" }, /* @__PURE__ */ Spicetify.React.createElement("h4", { className: "settings-section-title" }, "Pause Tracking"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "settings-toggle-desc" }, "Stop recording plays. Resume to start tracking again from this point.")), /* @__PURE__ */ Spicetify.React.createElement(
+      Toggle,
+      {
+        value: advanced.trackingPaused,
+        onSelected: (next) => {
+          setTrackingPaused(next);
+          if (!next) resetAccumulator();
+          dispatchAdv({ type: "SET_TRACKING_PAUSED", value: next });
+          Spicetify.showNotification(next ? "Tracking paused" : "Tracking resumed");
+        }
+      }
+    )), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-info" }, /* @__PURE__ */ Spicetify.React.createElement("h4", { className: "settings-section-title" }, "Skip Repeats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "settings-toggle-desc" }, "Don't record the same song twice in a row.")), /* @__PURE__ */ Spicetify.React.createElement(
+      Toggle,
+      {
+        value: advanced.skipRepeats,
+        onSelected: (next) => {
+          setSkipRepeatsEnabled(next);
+          dispatchAdv({ type: "SET_SKIP_REPEATS", value: next });
+        }
+      }
+    ))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-actions-row" }, /* @__PURE__ */ Spicetify.React.createElement(
       "button",
       {
         className: "footer-btn",
@@ -3045,7 +3366,15 @@ var ListeningStatsApp = (() => {
         }
       },
       "Clear Cache"
-    ), /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: onCheckUpdates }, "Check Updates")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-export" }, /* @__PURE__ */ Spicetify.React.createElement("h4", { className: "settings-section-title" }, "Export Data"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-actions-row" }, /* @__PURE__ */ Spicetify.React.createElement(
+    ), /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: onCheckUpdates }, "Check Updates"), currentProvider === "local" && /* @__PURE__ */ Spicetify.React.createElement(
+      "button",
+      {
+        className: "footer-btn",
+        onClick: handleCleanDuplicates,
+        disabled: advanced.dedupRunning
+      },
+      advanced.dedupRunning ? "Cleaning..." : "Clean Duplicates"
+    )), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-export" }, /* @__PURE__ */ Spicetify.React.createElement("h4", { className: "settings-section-title" }, "Export Data"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-actions-row" }, /* @__PURE__ */ Spicetify.React.createElement(
       "button",
       {
         className: "footer-btn",
@@ -3116,20 +3445,7 @@ var ListeningStatsApp = (() => {
             clearConfig2();
             clearStatsfmCache();
             clearProviderSelection();
-            try {
-              localStorage.removeItem(
-                "listening-stats:sfm-promo-dismissed"
-              );
-              localStorage.removeItem("listening-stats:lastUpdateCheck");
-              localStorage.removeItem("listening-stats:lastUpdate");
-              localStorage.removeItem("listening-stats:searchCache");
-              localStorage.removeItem("listening-stats:logging");
-              localStorage.removeItem("listening-stats:preferences");
-              localStorage.removeItem("listening-stats:tour-seen");
-              localStorage.removeItem("listening-stats:tour-version");
-              localStorage.removeItem("listening-stats:card-order");
-            } catch {
-            }
+            clearAllLocalStorage();
             onReset?.();
           }
         }
@@ -3141,9 +3457,12 @@ var ListeningStatsApp = (() => {
   // src/app/utils.ts
   function navigateToUri(uri) {
     if (uri && Spicetify.Platform?.History) {
-      const [, type, id] = uri.split(":");
-      if (type && id) {
-        Spicetify.Platform.History.push(`/${type}/${id}`);
+      try {
+        const parsed = Spicetify.URI.fromString(uri);
+        if (parsed?.type && parsed?.id) {
+          Spicetify.Platform.History.push(`/${parsed.type}/${parsed.id}`);
+        }
+      } catch {
       }
     }
   }
@@ -3155,8 +3474,8 @@ var ListeningStatsApp = (() => {
         await Spicetify.Platform.LibraryAPI.add({ uris: [trackUri] });
       }
       return !isLiked;
-    } catch (error) {
-      console.error("[ListeningStats] Failed to toggle like:", error);
+    } catch (error2) {
+      error2(" Failed to toggle like:", error2);
       return isLiked;
     }
   }
@@ -3166,8 +3485,8 @@ var ListeningStatsApp = (() => {
     try {
       const contains = await Spicetify.Platform.LibraryAPI.contains(...trackUris);
       trackUris.forEach((uri, i) => result.set(uri, contains[i]));
-    } catch (error) {
-      console.error("[ListeningStats] Failed to check liked status:", error);
+    } catch (error2) {
+      error2(" Failed to check liked status:", error2);
     }
     return result;
   }
@@ -3186,9 +3505,13 @@ var ListeningStatsApp = (() => {
     return "";
   }
   function timeAgo(dateStr) {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return dateStr;
+    if (Spicetify.Locale?.formatRelativeTime) {
+      return Spicetify.Locale.formatRelativeTime(date);
+    }
     const now = Date.now();
-    const then = new Date(dateStr).getTime();
-    const diffMs = now - then;
+    const diffMs = now - date.getTime();
     const minutes = Math.floor(diffMs / 6e4);
     if (minutes < 1) return "just now";
     if (minutes < 60) return `${minutes}m ago`;
@@ -3199,7 +3522,7 @@ var ListeningStatsApp = (() => {
     if (days < 7) return `${days}d ago`;
     const weeks = Math.floor(days / 7);
     if (weeks < 5) return `${weeks}w ago`;
-    return new Date(dateStr).toLocaleDateString();
+    return date.toLocaleDateString();
   }
 
   // src/app/components/AnimatedNumber.tsx
@@ -3255,53 +3578,6 @@ var ListeningStatsApp = (() => {
     )));
   }
 
-  // src/app/components/PortalTooltip.tsx
-  var { useState: useState3, useRef: useRef2, useCallback } = Spicetify.React;
-  function PortalTooltip({ text, children, className, style }) {
-    const [show, setShow] = useState3(false);
-    const [pos, setPos] = useState3({ top: 0, left: 0 });
-    const ref = useRef2(null);
-    const onEnter = useCallback(() => {
-      if (ref.current) {
-        const rect = ref.current.getBoundingClientRect();
-        setPos({
-          top: rect.top - 8,
-          left: rect.left + rect.width / 2
-        });
-      }
-      setShow(true);
-    }, []);
-    const onLeave = useCallback(() => setShow(false), []);
-    return /* @__PURE__ */ Spicetify.React.createElement(
-      "div",
-      {
-        ref,
-        className,
-        style,
-        onMouseEnter: onEnter,
-        onMouseLeave: onLeave
-      },
-      children,
-      show && Spicetify.ReactDOM.createPortal(
-        /* @__PURE__ */ Spicetify.React.createElement(
-          "div",
-          {
-            className: "stat-tooltip-portal",
-            style: {
-              position: "fixed",
-              top: pos.top,
-              left: pos.left,
-              transform: "translate(-50%, -100%)",
-              zIndex: 9990
-            }
-          },
-          text
-        ),
-        document.body
-      )
-    );
-  }
-
   // src/app/components/OverviewCards.tsx
   function OverviewCards({
     stats,
@@ -3310,8 +3586,9 @@ var ListeningStatsApp = (() => {
     periodLabels,
     onPeriodChange
   }) {
+    const { TooltipWrapper } = Spicetify.ReactComponent;
     const payout = estimateArtistPayout(stats.trackCount);
-    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, formatDurationLong(stats.totalTimeMs)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Time Listened"), /* @__PURE__ */ Spicetify.React.createElement(
+    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.totalTimeMs, format: formatDurationLong })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Time Listened"), /* @__PURE__ */ Spicetify.React.createElement(
       PeriodTabs,
       {
         period,
@@ -3319,21 +3596,21 @@ var ListeningStatsApp = (() => {
         periodLabels,
         onPeriodChange
       }
-    ), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement(PortalTooltip, { text: "Total number of tracks played (including repeats)" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.trackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks"))), /* @__PURE__ */ Spicetify.React.createElement(PortalTooltip, { text: "Number of different artists you've listened to" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueArtistCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists"))), /* @__PURE__ */ Spicetify.React.createElement(PortalTooltip, { text: "Number of different tracks you've listened to" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueTrackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique"))), stats.lastfmConnected && stats.totalScrobbles ? /* @__PURE__ */ Spicetify.React.createElement(PortalTooltip, { text: "Total plays recorded by Last.fm" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, formatNumber(stats.totalScrobbles)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Scrobbles"))) : null)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(PortalTooltip, { text: "Estimated amount Spotify paid artists from your streams ($0.004/stream)" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Spotify paid artists"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(PortalTooltip, { text: "Consecutive days with at least one play" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, formatNumber(stats.streakDays)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(PortalTooltip, { text: stats.newArtistsCount > 0 ? "Artists you listened to for the first time in this period" : "Number of days with at least one play in this period" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, stats.newArtistsCount > 0 ? /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(stats.newArtistsCount)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists")) : /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(stats.listenedDays)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Days Listened")))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(PortalTooltip, { text: "Percentage of tracks skipped before the play threshold" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value red" }, Math.floor(stats.skipRate * 100), "%"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Skip Rate")))))));
+    ), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Total number of tracks played (including repeats)", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.trackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks"))), /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Number of different artists you've listened to", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueArtistCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists"))), /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Number of different tracks you've listened to", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueTrackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique"))), stats.lastfmConnected && stats.totalScrobbles ? /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Total plays recorded by Last.fm", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, formatNumber(stats.totalScrobbles)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Scrobbles"))) : null)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Estimated amount Spotify paid artists from your streams ($0.004/stream)", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Spotify paid artists"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Consecutive days with at least one play", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, formatNumber(stats.streakDays)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: stats.newArtistsCount > 0 ? "Artists you listened to for the first time in this period" : "Number of days with at least one play in this period", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, stats.newArtistsCount > 0 ? /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(stats.newArtistsCount)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists")) : /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(stats.listenedDays)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Days Listened")))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Percentage of tracks skipped before the play threshold", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value red" }, Math.floor(stats.skipRate * 100), "%"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Skip Rate")))))));
   }
 
   // src/app/components/ImageWithRetry.tsx
-  var { useState: useState4, useRef: useRef3, useEffect: useEffect2 } = Spicetify.React;
+  var { useState: useState3, useRef: useRef2, useEffect: useEffect2 } = Spicetify.React;
   function ImageWithRetry({
     src,
     className = "",
     alt = "",
     maxRetries = 3
   }) {
-    const [attempt, setAttempt] = useState4(0);
-    const [failed, setFailed] = useState4(false);
-    const prevSrcRef = useRef3(src);
-    const timerRef = useRef3(null);
+    const [attempt, setAttempt] = useState3(0);
+    const [failed, setFailed] = useState3(false);
+    const prevSrcRef = useRef2(src);
+    const timerRef = useRef2(null);
     useEffect2(() => {
       if (prevSrcRef.current !== src) {
         prevSrcRef.current = src;
@@ -3387,6 +3664,7 @@ var ListeningStatsApp = (() => {
     showLikeButtons = true,
     period = ""
   }) {
+    const { TooltipWrapper } = Spicetify.ReactComponent;
     const itemCount = getPreferences().itemsPerSection;
     return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-lists-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.music } }), "Top Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topTracks.slice(0, itemCount).map((t, i) => /* @__PURE__ */ Spicetify.React.createElement(
       "div",
@@ -3408,7 +3686,7 @@ var ListeningStatsApp = (() => {
             __html: likedTracks.get(t.trackUri) ? Icons.heartFilled : Icons.heart
           }
         }
-      ) : /* @__PURE__ */ Spicetify.React.createElement(PortalTooltip, { text: "No Spotify link, can't save to library" }, /* @__PURE__ */ Spicetify.React.createElement(
+      ) : /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "No Spotify link, can't save to library", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement(
         "span",
         {
           className: "heart-btn disabled",
@@ -3493,19 +3771,19 @@ var ListeningStatsApp = (() => {
   }
 
   // src/app/components/LastfmBanner.tsx
-  var { useState: useState5, useEffect: useEffect3 } = Spicetify.React;
+  var { useState: useState4, useEffect: useEffect3 } = Spicetify.React;
 
   // src/app/components/SetupWizard.tsx
-  var { useState: useState6, useEffect: useEffect4 } = Spicetify.React;
+  var { useState: useState5, useEffect: useEffect4 } = Spicetify.React;
   var STEPS = ["choose", "configure", "validate", "success"];
   function SetupWizard({ onComplete }) {
-    const [stepIndex, setStepIndex] = useState6(0);
-    const [provider, setProvider] = useState6(null);
-    const [username, setUsername] = useState6("");
-    const [apiKey, setApiKey] = useState6("");
-    const [validating, setValidating] = useState6(false);
-    const [validationError, setValidationError] = useState6("");
-    const [confirmedUsername, setConfirmedUsername] = useState6("");
+    const [stepIndex, setStepIndex] = useState5(0);
+    const [provider, setProvider] = useState5(null);
+    const [username, setUsername] = useState5("");
+    const [apiKey, setApiKey] = useState5("");
+    const [validating, setValidating] = useState5(false);
+    const [validationError, setValidationError] = useState5("");
+    const [confirmedUsername, setConfirmedUsername] = useState5("");
     const currentStep = STEPS[stepIndex];
     const goBack = () => {
       if (stepIndex > 0) {
@@ -3670,7 +3948,7 @@ var ListeningStatsApp = (() => {
     username,
     apiKey,
     validating,
-    error,
+    error: error2,
     onValidating,
     onError,
     onSuccess,
@@ -3702,8 +3980,8 @@ var ListeningStatsApp = (() => {
     useEffect4(() => {
       runValidation();
     }, []);
-    if (error) {
-      return /* @__PURE__ */ Spicetify.React.createElement("div", null, /* @__PURE__ */ Spicetify.React.createElement("h2", { className: "wizard-step-title" }, "Validation Failed"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "wizard-error" }, error), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "wizard-actions" }, /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: onBack }, "Back"), /* @__PURE__ */ Spicetify.React.createElement(
+    if (error2) {
+      return /* @__PURE__ */ Spicetify.React.createElement("div", null, /* @__PURE__ */ Spicetify.React.createElement("h2", { className: "wizard-step-title" }, "Validation Failed"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "wizard-error" }, error2), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "wizard-actions" }, /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: onBack }, "Back"), /* @__PURE__ */ Spicetify.React.createElement(
         "button",
         {
           className: "footer-btn primary",
@@ -3749,6 +4027,7 @@ var ListeningStatsApp = (() => {
     peakHour,
     hourlyUnit = "ms"
   }) {
+    const { TooltipWrapper } = Spicetify.ReactComponent;
     if (!hourlyDistribution.some((h) => h > 0)) {
       return null;
     }
@@ -3762,13 +4041,19 @@ var ListeningStatsApp = (() => {
     return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "activity-title" }, "Activity by Hour"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-peak" }, "Peak: ", /* @__PURE__ */ Spicetify.React.createElement("strong", null, formatHour(peakHour)))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-chart" }, hourlyDistribution.map((val, hr) => {
       const h = val > 0 ? Math.max(val / max * 100, 5) : 0;
       return /* @__PURE__ */ Spicetify.React.createElement(
-        PortalTooltip,
+        TooltipWrapper,
         {
           key: hr,
-          text: `${formatHour(hr)}: ${formatValue(val)}`,
-          className: `activity-bar ${hr === peakHour && val > 0 ? "peak" : ""}`,
-          style: { height: `${h}%`, animationDelay: `${hr * 0.02}s` }
-        }
+          label: `${formatHour(hr)}: ${formatValue(val)}`,
+          placement: "top"
+        },
+        /* @__PURE__ */ Spicetify.React.createElement(
+          "div",
+          {
+            className: `activity-bar ${hr === peakHour && val > 0 ? "peak" : ""}`,
+            style: { height: `${h}%`, animationDelay: `${hr * 0.02}s` }
+          }
+        )
       );
     })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "chart-labels" }, /* @__PURE__ */ Spicetify.React.createElement("span", null, formatHour(0)), /* @__PURE__ */ Spicetify.React.createElement("span", null, formatHour(6)), /* @__PURE__ */ Spicetify.React.createElement("span", null, formatHour(12)), /* @__PURE__ */ Spicetify.React.createElement("span", null, formatHour(18)), /* @__PURE__ */ Spicetify.React.createElement("span", null, formatHour(0))));
   }
@@ -3835,7 +4120,7 @@ var ListeningStatsApp = (() => {
   }
 
   // src/app/components/TourOverlay.tsx
-  var { useState: useState7, useEffect: useEffect5, useRef: useRef4, useCallback: useCallback2 } = Spicetify.React;
+  var { useState: useState6, useEffect: useEffect5, useRef: useRef3, useCallback } = Spicetify.React;
   var TOOLTIP_WIDTH = 320;
   var TOOLTIP_HEIGHT = 180;
   var OFFSET = 16;
@@ -3907,9 +4192,9 @@ var ListeningStatsApp = (() => {
     onEnd,
     abortSignal
   }) {
-    const [targetRect, setTargetRect] = useState7(null);
-    const debounceRef = useRef4(0);
-    const updatePosition = useCallback2(() => {
+    const [targetRect, setTargetRect] = useState6(null);
+    const debounceRef = useRef3(0);
+    const updatePosition = useCallback(() => {
       const el = document.querySelector(step.target);
       if (!el) {
         if (!abortSignal.current.cancelled) {
@@ -4086,7 +4371,7 @@ var ListeningStatsApp = (() => {
   }
 
   // src/app/components/Header.tsx
-  var { useState: useState8, useEffect: useEffect6, useRef: useRef5 } = Spicetify.React;
+  var { useState: useState7, useEffect: useEffect6, useRef: useRef4 } = Spicetify.React;
   var PROVIDER_NAMES2 = {
     local: "Local Tracking",
     lastfm: "Last.fm",
@@ -4094,8 +4379,8 @@ var ListeningStatsApp = (() => {
   };
   var ANNOUNCEMENT_URL = "https://raw.githubusercontent.com/Xndr2/listening-stats/main/ANNOUNCEMENT.md";
   function Announcement() {
-    const [html, setHtml] = useState8(null);
-    const fetched = useRef5(false);
+    const [html, setHtml] = useState7(null);
+    const fetched = useRef4(false);
     useEffect6(() => {
       if (fetched.current) return;
       fetched.current = true;
@@ -4213,7 +4498,8 @@ var ListeningStatsApp = (() => {
       const max = Math.max(d[0], d[1], d[2]);
       if (max < 60) return GREEN;
       return [d[0], d[1], d[2]];
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] Share card image load failed", e);
       return GREEN;
     }
   }
@@ -4837,13 +5123,15 @@ var ListeningStatsApp = (() => {
         });
         await navigator.share({ files: [file] });
         return "shared";
-      } catch {
+      } catch (e) {
+        console.warn("[listening-stats] Share card blob creation failed", e);
       }
     }
     try {
       await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
       return "copied";
-    } catch {
+    } catch (e) {
+      console.warn("[listening-stats] Share card clipboard write failed", e);
     }
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -4857,17 +5145,18 @@ var ListeningStatsApp = (() => {
   }
 
   // src/app/components/ShareCardModal.tsx
-  var { useState: useState9, useRef: useRef6, useEffect: useEffect7 } = Spicetify.React;
+  init_logger();
+  var { useState: useState8, useRef: useRef5, useEffect: useEffect7 } = Spicetify.React;
   function ShareCardModal({
     stats,
     period,
     providerType,
     onClose
   }) {
-    const [format, setFormat] = useState9("story");
-    const [generating, setGenerating] = useState9(false);
-    const [previewUrl, setPreviewUrl] = useState9(null);
-    const blobRef = useRef6(null);
+    const [format, setFormat] = useState8("story");
+    const [generating, setGenerating] = useState8(false);
+    const [previewUrl, setPreviewUrl] = useState8(null);
+    const blobRef = useRef5(null);
     useEffect7(() => {
       generatePreview();
     }, [format]);
@@ -4884,7 +5173,7 @@ var ListeningStatsApp = (() => {
         if (previewUrl) URL.revokeObjectURL(previewUrl);
         setPreviewUrl(URL.createObjectURL(blob));
       } catch (e) {
-        console.error("[ListeningStats] Failed to generate share card:", e);
+        error(" Failed to generate share card:", e);
       }
       setGenerating(false);
     }
@@ -4968,8 +5257,8 @@ var ListeningStatsApp = (() => {
   }
 
   // src/app/hooks/useSectionOrder.ts
-  var { useState: useState10, useCallback: useCallback3, useEffect: useEffect8 } = Spicetify.React;
-  var LAYOUT_KEY = "listening-stats:card-order";
+  init_constants();
+  var { useState: useState9, useCallback: useCallback2, useEffect: useEffect8 } = Spicetify.React;
   var DEFAULT_ORDER = [
     "overview",
     "toplists",
@@ -4978,9 +5267,9 @@ var ListeningStatsApp = (() => {
     "recent"
   ];
   function useSectionOrder() {
-    const [order, setOrder] = useState10(() => {
+    const [order, setOrder] = useState9(() => {
       try {
-        const stored = localStorage.getItem(LAYOUT_KEY);
+        const stored = localStorage.getItem(LS_KEYS.CARD_ORDER);
         if (stored) {
           const parsed = JSON.parse(stored);
           if (Array.isArray(parsed)) {
@@ -4993,56 +5282,59 @@ var ListeningStatsApp = (() => {
             return validated;
           }
         }
-      } catch {
+      } catch (e) {
+        console.warn("[listening-stats] Section order access failed", e);
       }
       return [...DEFAULT_ORDER];
     });
-    const reorder = useCallback3((newOrder) => {
+    const reorder = useCallback2((newOrder) => {
       setOrder(newOrder);
       try {
-        localStorage.setItem(LAYOUT_KEY, JSON.stringify(newOrder));
-      } catch {
+        localStorage.setItem(LS_KEYS.CARD_ORDER, JSON.stringify(newOrder));
+      } catch (e) {
+        console.warn("[listening-stats] Section order access failed", e);
       }
     }, []);
-    const resetOrder = useCallback3(() => {
+    const resetOrder = useCallback2(() => {
       const defaultCopy = [...DEFAULT_ORDER];
       setOrder(defaultCopy);
       try {
-        localStorage.setItem(LAYOUT_KEY, JSON.stringify(defaultCopy));
-      } catch {
+        localStorage.setItem(LS_KEYS.CARD_ORDER, JSON.stringify(defaultCopy));
+      } catch (e) {
+        console.warn("[listening-stats] Section order access failed", e);
       }
     }, []);
     useEffect8(() => {
       const handler = () => resetOrder();
-      window.addEventListener("listening-stats:reset-layout", handler);
+      window.addEventListener(EVENTS.RESET_LAYOUT, handler);
       return () => {
-        window.removeEventListener("listening-stats:reset-layout", handler);
+        window.removeEventListener(EVENTS.RESET_LAYOUT, handler);
       };
     }, [resetOrder]);
     return { order, reorder, resetOrder };
   }
 
   // src/app/hooks/useTour.ts
-  var { useState: useState11, useCallback: useCallback4, useRef: useRef7, createContext, useContext } = Spicetify.React;
+  var { useState: useState10, useCallback: useCallback3, useRef: useRef6, createContext, useContext } = Spicetify.React;
   var TourContext = createContext(null);
   function TourProvider({ children }) {
-    const [isActive, setIsActive] = useState11(false);
-    const [currentStep, setCurrentStep] = useState11(0);
-    const [steps, setSteps] = useState11([]);
-    const abortRef = useRef7({ cancelled: false });
-    const endTour = useCallback4(() => {
+    const [isActive, setIsActive] = useState10(false);
+    const [currentStep, setCurrentStep] = useState10(0);
+    const [steps, setSteps] = useState10([]);
+    const abortRef = useRef6({ cancelled: false });
+    const endTour = useCallback3(() => {
       abortRef.current.cancelled = true;
       setIsActive(false);
       setCurrentStep(0);
       setSteps([]);
     }, []);
-    const startTour = useCallback4((tourSteps) => {
+    const startTour = useCallback3((tourSteps) => {
       abortRef.current = { cancelled: false };
       setSteps(tourSteps);
       setCurrentStep(0);
       setIsActive(true);
     }, []);
-    const nextStep = useCallback4(() => {
+    const nextStep = useCallback3(() => {
       setCurrentStep((prev) => {
         if (prev >= steps.length - 1) {
           abortRef.current.cancelled = true;
@@ -5052,7 +5344,7 @@ var ListeningStatsApp = (() => {
         return prev + 1;
       });
     }, [steps.length, endTour]);
-    const prevStep = useCallback4(() => {
+    const prevStep = useCallback3(() => {
       setCurrentStep((prev) => Math.max(0, prev - 1));
     }, []);
     const value = {
@@ -7766,10 +8058,34 @@ var ListeningStatsApp = (() => {
   }
 
   // src/app/index.tsx
-  var { useRef: useRef8, useState: useState12, useCallback: useCallback5, useEffect: useEffect9 } = Spicetify.React;
-  var SFM_PROMO_KEY = "listening-stats:sfm-promo-dismissed";
+  init_constants();
+  var { useRef: useRef7, useState: useState11, useCallback: useCallback4, useEffect: useEffect9 } = Spicetify.React;
   var VERSION = getCurrentVersion();
-  var TOUR_SEEN_KEY = "listening-stats:tour-seen";
+  var _warnedKeys2 = /* @__PURE__ */ new Set();
+  function warnOnce2(key, msg, err) {
+    if (_warnedKeys2.has(key)) return;
+    _warnedKeys2.add(key);
+    console.warn(`[listening-stats] ${msg}`, err ?? "");
+  }
+  function getPersistedPeriod(provider) {
+    if (!provider) return "recent";
+    try {
+      const stored = localStorage.getItem(LS_KEYS.PERIOD);
+      if (stored && provider.periods.includes(stored)) {
+        return stored;
+      }
+    } catch (e) {
+      warnOnce2("period", "Failed to read persisted period", e);
+    }
+    return provider.defaultPeriod;
+  }
+  function persistPeriod(period) {
+    try {
+      localStorage.setItem(LS_KEYS.PERIOD, period);
+    } catch (e) {
+      warnOnce2("period", "Failed to persist period", e);
+    }
+  }
   function buildTourSteps(providerType) {
     const steps = [
       {
@@ -7823,17 +8139,19 @@ var ListeningStatsApp = (() => {
   }
   function shouldShowTour() {
     try {
-      const seen = localStorage.getItem(TOUR_SEEN_KEY);
+      const seen = localStorage.getItem(LS_KEYS.TOUR_SEEN);
       if (!seen) return "full";
       return "none";
-    } catch {
+    } catch (e) {
+      warnOnce2("tourSeen", "Failed to read tour seen flag", e);
       return "none";
     }
   }
   function markTourComplete() {
     try {
-      localStorage.setItem(TOUR_SEEN_KEY, "1");
-    } catch {
+      localStorage.setItem(LS_KEYS.TOUR_SEEN, "1");
+    } catch (e) {
+      warnOnce2("tourSeen", "Failed to write tour seen flag", e);
     }
   }
   var SECTION_REGISTRY = {
@@ -7885,21 +8203,21 @@ var ListeningStatsApp = (() => {
       const handler = () => {
         startTour(buildTourSteps(props.providerType));
       };
-      window.addEventListener("listening-stats:start-tour", handler);
-      return () => window.removeEventListener("listening-stats:start-tour", handler);
+      window.addEventListener(EVENTS.START_TOUR, handler);
+      return () => window.removeEventListener(EVENTS.START_TOUR, handler);
     }, [startTour]);
-    const containerRef = useRef8(null);
-    const dragItemRef = useRef8(null);
-    const dragOverRef = useRef8(null);
-    const insertBeforeRef = useRef8(true);
-    const scrollRafRef = useRef8(0);
-    const [dropTarget, setDropTarget] = useState12(null);
-    const [draggingId, setDraggingId] = useState12(null);
-    const handleDragStart = useCallback5((id) => {
+    const containerRef = useRef7(null);
+    const dragItemRef = useRef7(null);
+    const dragOverRef = useRef7(null);
+    const insertBeforeRef = useRef7(true);
+    const scrollRafRef = useRef7(0);
+    const [dropTarget, setDropTarget] = useState11(null);
+    const [draggingId, setDraggingId] = useState11(null);
+    const handleDragStart = useCallback4((id) => {
       dragItemRef.current = id;
       setDraggingId(id);
     }, []);
-    const computeDropTarget = useCallback5((clientY) => {
+    const computeDropTarget = useCallback4((clientY) => {
       if (!containerRef.current || !dragItemRef.current) return;
       const sections = containerRef.current.querySelectorAll(".draggable-section");
       let bestId = null;
@@ -7929,7 +8247,7 @@ var ListeningStatsApp = (() => {
         });
       }
     }, []);
-    const autoScroll = useCallback5((clientY) => {
+    const autoScroll = useCallback4((clientY) => {
       cancelAnimationFrame(scrollRafRef.current);
       const EDGE = 80;
       const MAX_SPEED = 18;
@@ -7951,7 +8269,7 @@ var ListeningStatsApp = (() => {
         scrollRafRef.current = requestAnimationFrame(tick);
       }
     }, []);
-    const handleContainerDragOver = useCallback5(
+    const handleContainerDragOver = useCallback4(
       (e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
@@ -7960,7 +8278,7 @@ var ListeningStatsApp = (() => {
       },
       [computeDropTarget, autoScroll]
     );
-    const executeDrop = useCallback5(() => {
+    const executeDrop = useCallback4(() => {
       cancelAnimationFrame(scrollRafRef.current);
       const draggedId = dragItemRef.current;
       const overId = dragOverRef.current;
@@ -7980,14 +8298,14 @@ var ListeningStatsApp = (() => {
       setDropTarget(null);
       setDraggingId(null);
     }, [order, reorder]);
-    const handleContainerDrop = useCallback5(
+    const handleContainerDrop = useCallback4(
       (e) => {
         e.preventDefault();
         executeDrop();
       },
       [executeDrop]
     );
-    const handleDragEnd = useCallback5(() => {
+    const handleDragEnd = useCallback4(() => {
       cancelAnimationFrame(scrollRafRef.current);
       dragItemRef.current = null;
       dragOverRef.current = null;
@@ -7995,7 +8313,7 @@ var ListeningStatsApp = (() => {
       setDropTarget(null);
       setDraggingId(null);
     }, []);
-    const noop = useCallback5(
+    const noop = useCallback4(
       (_e, _id) => {
       },
       []
@@ -8062,7 +8380,7 @@ var ListeningStatsApp = (() => {
             "Failed to copy. Check console for command.",
             true
           );
-          console.log("[ListeningStats] Install command:", getInstallCommand());
+          log("Install command:", getInstallCommand());
         }
       };
       this.dismissUpdateBanner = () => {
@@ -8092,13 +8410,28 @@ var ListeningStatsApp = (() => {
             }
           }
         } catch (e) {
-          console.error("[ListeningStats] Load failed:", e);
+          error("Load failed:", e);
           const isApiError = e instanceof ApiError || e?.name === "ApiError";
           this.setState({
             loading: false,
             error: e.message || "Failed to load stats",
             errorType: isApiError ? "api" : "generic"
           });
+        }
+      };
+      this.refreshStatsQuietly = async () => {
+        try {
+          const data = await calculateStats(this.state.period);
+          this.setState({ stats: data });
+          if (data.topTracks.length > 0 && data.topTracks[0].trackUri) {
+            const uris = data.topTracks.map((t) => t.trackUri).filter(Boolean);
+            if (uris.length > 0) {
+              const liked = await checkLikedTracks(uris);
+              this.setState({ likedTracks: liked });
+            }
+          }
+        } catch (e) {
+          console.warn("[listening-stats] Background stats refresh failed", e);
         }
       };
       this.handleLikeToggle = async (uri, e) => {
@@ -8110,6 +8443,7 @@ var ListeningStatsApp = (() => {
         this.setState({ likedTracks: m });
       };
       this.handlePeriodChange = (period) => {
+        persistPeriod(period);
         this.setState({ period });
       };
       this.handleShare = () => {
@@ -8118,8 +8452,9 @@ var ListeningStatsApp = (() => {
       this.dismissSfmPromo = () => {
         this.setState({ showSfmPromo: false });
         try {
-          localStorage.setItem(SFM_PROMO_KEY, "1");
-        } catch {
+          localStorage.setItem(LS_KEYS.SFM_PROMO_DISMISSED, "1");
+        } catch (e) {
+          console.warn("[listening-stats] Failed to write SFM promo dismissed flag", e);
         }
       };
       this.handleSfmSwitch = async (username) => {
@@ -8151,12 +8486,14 @@ var ListeningStatsApp = (() => {
           let showSfmPromo = false;
           if (provider.type !== "statsfm") {
             try {
-              if (!localStorage.getItem(SFM_PROMO_KEY)) {
+              if (!localStorage.getItem(LS_KEYS.SFM_PROMO_DISMISSED)) {
                 showSfmPromo = true;
               }
-            } catch {
+            } catch (e) {
+              console.warn("[listening-stats] Failed to read SFM promo dismissed flag", e);
             }
           }
+          persistPeriod(provider.defaultPeriod);
           this.setState(
             {
               needsSetup: false,
@@ -8179,10 +8516,12 @@ var ListeningStatsApp = (() => {
           const isStatsfm = provider.type === "statsfm";
           if (isStatsfm) {
             try {
-              localStorage.setItem(SFM_PROMO_KEY, "1");
-            } catch {
+              localStorage.setItem(LS_KEYS.SFM_PROMO_DISMISSED, "1");
+            } catch (e) {
+              console.warn("[listening-stats] Failed to write SFM promo dismissed flag", e);
             }
           }
+          persistPeriod(provider.defaultPeriod);
           this.setState(
             {
               providerType: provider.type,
@@ -8208,7 +8547,7 @@ var ListeningStatsApp = (() => {
       }
       const provider = getActiveProvider();
       this.state = {
-        period: provider?.defaultPeriod || "recent",
+        period: getPersistedPeriod(provider),
         stats: null,
         loading: !needsSetup,
         error: null,
@@ -8232,17 +8571,18 @@ var ListeningStatsApp = (() => {
         this.checkForUpdateOnLoad();
         if (this.state.providerType && this.state.providerType !== "statsfm") {
           try {
-            if (!localStorage.getItem(SFM_PROMO_KEY)) {
+            if (!localStorage.getItem(LS_KEYS.SFM_PROMO_DISMISSED)) {
               this.setState({ showSfmPromo: true });
             }
-          } catch {
+          } catch (e) {
+            console.warn("[listening-stats] Failed to read SFM promo dismissed flag", e);
           }
         }
       }
       this.unsubStatsUpdate = onStatsUpdated(() => {
         if (!this.state.needsSetup && !this.state.loading) {
           clearStatsCache();
-          this.loadStats();
+          this.refreshStatsQuietly();
         }
       });
       this.unsubPrefs = onPreferencesChanged(() => {
@@ -8264,7 +8604,7 @@ var ListeningStatsApp = (() => {
         period,
         stats,
         loading,
-        error,
+        error: error2,
         likedTracks,
         updateInfo,
         showUpdateBanner,
@@ -8332,7 +8672,7 @@ var ListeningStatsApp = (() => {
         ),
         document.body
       ) : null;
-      if (error && !stats) {
+      if (error2 && !stats) {
         const isApiFailure = this.state.errorType === "api";
         return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, /* @__PURE__ */ Spicetify.React.createElement(
           Header,
@@ -8340,7 +8680,7 @@ var ListeningStatsApp = (() => {
             onToggleSettings: () => this.setState({ showSettings: !showSettings }),
             providerType
           }
-        ), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "error-state" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "error-message" }, /* @__PURE__ */ Spicetify.React.createElement("h3", null, isApiFailure ? "Could not fetch data" : "Something went wrong"), /* @__PURE__ */ Spicetify.React.createElement("p", null, isApiFailure ? "The data source is temporarily unavailable. This is usually caused by rate limiting. Please wait a moment and try again." : error), /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn primary", onClick: this.loadStats }, "Try Again"))), /* @__PURE__ */ Spicetify.React.createElement(
+        ), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "error-state" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "error-message" }, /* @__PURE__ */ Spicetify.React.createElement("h3", null, isApiFailure ? "Could not fetch data" : "Something went wrong"), /* @__PURE__ */ Spicetify.React.createElement("p", null, isApiFailure ? "The data source is temporarily unavailable. This is usually caused by rate limiting. Please wait a moment and try again." : error2), /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn primary", onClick: this.loadStats }, "Try Again"))), /* @__PURE__ */ Spicetify.React.createElement(
           Footer,
           {
             version: VERSION,
@@ -8422,7 +8762,7 @@ var ListeningStatsApp = (() => {
   }) {
     const [username, setUsername] = Spicetify.React.useState("");
     const [loading, setLoading] = Spicetify.React.useState(false);
-    const [error, setError] = Spicetify.React.useState("");
+    const [error2, setError] = Spicetify.React.useState("");
     const handleSwitch = async () => {
       if (!username.trim()) {
         setError("Username is required");
@@ -8457,7 +8797,7 @@ var ListeningStatsApp = (() => {
           onChange: (e) => setUsername(e.target.value),
           disabled: loading
         }
-      ), error && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "lastfm-error" }, error)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "sfm-promo-actions" }, /* @__PURE__ */ Spicetify.React.createElement(
+      ), error2 && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "lastfm-error" }, error2)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "sfm-promo-actions" }, /* @__PURE__ */ Spicetify.React.createElement(
         "button",
         {
           className: "footer-btn primary",
