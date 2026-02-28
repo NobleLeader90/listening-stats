@@ -115,10 +115,23 @@ export function getInstallCommand(): string {
 export async function copyInstallCommand(): Promise<boolean> {
   const cmd = getInstallCommand();
   try {
-    await Spicetify.Platform.ClipboardAPI.copy(cmd);
+    await navigator.clipboard.writeText(cmd);
     return true;
-  } catch (e) {
-    console.warn("[listening-stats] Clipboard copy failed", e);
-    return false;
+  } catch {
+    // Fallback for restricted contexts
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = cmd;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      return true;
+    } catch (e) {
+      console.warn("[listening-stats] Clipboard copy failed", e);
+      return false;
+    }
   }
 }
