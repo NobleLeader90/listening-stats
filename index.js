@@ -454,12 +454,18 @@ var ListeningStatsApp = (() => {
     try {
       localStorage.removeItem(LS_KEYS.MIGRATION_BACKUP);
     } catch (e) {
-      console.warn("[listening-stats] Failed to remove migration backup from localStorage", e);
+      console.warn(
+        "[listening-stats] Failed to remove migration backup from localStorage",
+        e
+      );
     }
     try {
       localStorage.removeItem(LS_KEYS.MIGRATION_VERSION);
     } catch (e) {
-      console.warn("[listening-stats] Failed to remove migration version from localStorage", e);
+      console.warn(
+        "[listening-stats] Failed to remove migration version from localStorage",
+        e
+      );
     }
     try {
       await deleteDB(BACKUP_DB_NAME);
@@ -552,7 +558,9 @@ var ListeningStatsApp = (() => {
       if (!dedupDone) {
         const dedupResult = await runDedup(db);
         if (dedupResult.removed > 0) {
-          Spicetify?.showNotification?.(`Cleaned up ${dedupResult.removed} duplicate entries`);
+          Spicetify?.showNotification?.(
+            `Cleaned up ${dedupResult.removed} duplicate entries`
+          );
         }
         localStorage.setItem(LS_KEYS.DEDUP_V2_DONE, "1");
       }
@@ -587,7 +595,9 @@ var ListeningStatsApp = (() => {
           tx.store.delete(event.id);
         }
         await tx.done;
-        log(` Removed ${toDelete.length} duplicate events across ${affectedTracks.size} tracks`);
+        log(
+          ` Removed ${toDelete.length} duplicate events across ${affectedTracks.size} tracks`
+        );
       }
       return { removed: toDelete.length, affectedTracks: affectedTracks.size };
     } catch (e) {
@@ -599,7 +609,11 @@ var ListeningStatsApp = (() => {
     try {
       const db = await getDB();
       const range = IDBKeyRange.only(event.startedAt);
-      const existing = await db.getAllFromIndex(STORE_NAME, "by-startedAt", range);
+      const existing = await db.getAllFromIndex(
+        STORE_NAME,
+        "by-startedAt",
+        range
+      );
       if (existing.some((e) => e.trackUri === event.trackUri)) {
         warn(" Duplicate event blocked:", event.trackName);
         return false;
@@ -635,8 +649,8 @@ var ListeningStatsApp = (() => {
   var init_storage = __esm({
     "src/services/storage.ts"() {
       init_build();
-      init_logger();
       init_constants();
+      init_logger();
       DB_NAME = "listening-stats";
       DB_VERSION = 4;
       STORE_NAME = "playEvents";
@@ -995,9 +1009,9 @@ var ListeningStatsApp = (() => {
   }
 
   // src/services/tracker.ts
+  init_constants();
   init_logger();
   init_storage();
-  init_constants();
   init_logger();
   var DEFAULT_THRESHOLD_MS = 1e4;
   var activeProviderType = null;
@@ -1195,16 +1209,23 @@ var ListeningStatsApp = (() => {
   async function writePlayEvent(totalPlayedMs, skipped) {
     if (!previousTrackData) return;
     if (isTrackingPaused()) {
-      log("Tracking paused \u2014 skipping write for:", previousTrackData.trackName);
+      log("Tracking paused: skipping write for:", previousTrackData.trackName);
       return;
     }
     if (isSkipRepeatsEnabled() && previousTrackData.trackUri === lastRecordedUri) {
-      log("Skip-repeats: suppressed consecutive play for:", previousTrackData.trackName);
+      log(
+        "Skip-repeats: suppressed consecutive play for:",
+        previousTrackData.trackName
+      );
       return;
     }
     const now = Date.now();
     if (previousTrackData.trackUri === lastWrittenUri && now - lastWrittenAt < DEDUP_WINDOW_MS) {
-      log("Dedup: suppressed duplicate write for", previousTrackData.trackName, `(${now - lastWrittenAt}ms since last write)`);
+      log(
+        "Dedup: suppressed duplicate write for",
+        previousTrackData.trackName,
+        `(${now - lastWrittenAt}ms since last write)`
+      );
       return;
     }
     if (skipped === void 0) {
@@ -1906,7 +1927,8 @@ var ListeningStatsApp = (() => {
       if (existing) {
         existing.count++;
         existing.totalMs += e.playedMs;
-        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
+        if (e.startedAt > existing.lastPlayedAt)
+          existing.lastPlayedAt = e.startedAt;
       } else {
         trackMap.set(e.trackUri, {
           trackUri: e.trackUri,
@@ -1922,7 +1944,8 @@ var ListeningStatsApp = (() => {
     const topTracks = Array.from(trackMap.values()).sort((a, b) => {
       if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
       if (b.count !== a.count) return b.count - a.count;
-      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      if (b.lastPlayedAt !== a.lastPlayedAt)
+        return b.lastPlayedAt - a.lastPlayedAt;
       return a.trackUri.localeCompare(b.trackUri);
     }).slice(0, 10).map((t, i) => ({
       trackUri: t.trackUri,
@@ -1940,7 +1963,8 @@ var ListeningStatsApp = (() => {
       if (existing) {
         existing.count++;
         existing.totalMs += e.playedMs;
-        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
+        if (e.startedAt > existing.lastPlayedAt)
+          existing.lastPlayedAt = e.startedAt;
       } else {
         artistMap.set(key, {
           artistUri: e.artistUri,
@@ -1954,7 +1978,8 @@ var ListeningStatsApp = (() => {
     const topArtistAggregated = Array.from(artistMap.values()).sort((a, b) => {
       if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
       if (b.count !== a.count) return b.count - a.count;
-      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      if (b.lastPlayedAt !== a.lastPlayedAt)
+        return b.lastPlayedAt - a.lastPlayedAt;
       const aKey = a.artistUri || a.artistName;
       const bKey = b.artistUri || b.artistName;
       return aKey.localeCompare(bKey);
@@ -1993,7 +2018,8 @@ var ListeningStatsApp = (() => {
       if (existing) {
         existing.trackCount++;
         existing.totalMs += e.playedMs;
-        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
+        if (e.startedAt > existing.lastPlayedAt)
+          existing.lastPlayedAt = e.startedAt;
       } else {
         albumMap.set(e.albumUri, {
           albumUri: e.albumUri,
@@ -2009,7 +2035,8 @@ var ListeningStatsApp = (() => {
     const topAlbums = Array.from(albumMap.values()).sort((a, b) => {
       if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
       if (b.trackCount !== a.trackCount) return b.trackCount - a.trackCount;
-      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      if (b.lastPlayedAt !== a.lastPlayedAt)
+        return b.lastPlayedAt - a.lastPlayedAt;
       return a.albumUri.localeCompare(b.albumUri);
     }).slice(0, 10).map((a) => ({
       ...a,
@@ -2048,9 +2075,11 @@ var ListeningStatsApp = (() => {
     const periodDates = new Set(
       events.map((e) => new Date(e.startedAt).toISOString().split("T")[0])
     );
-    const allDates = Array.from(new Set(
-      allEvents.map((e) => new Date(e.startedAt).toISOString().split("T")[0])
-    ));
+    const allDates = Array.from(
+      new Set(
+        allEvents.map((e) => new Date(e.startedAt).toISOString().split("T")[0])
+      )
+    );
     const totalTimeMs = events.reduce((sum, e) => sum + e.playedMs, 0);
     const skipEvents = events.length - completedEvents.length;
     return {
@@ -2591,11 +2620,23 @@ var ListeningStatsApp = (() => {
   async function copyInstallCommand() {
     const cmd = getInstallCommand();
     try {
-      await Spicetify.Platform.ClipboardAPI.copy(cmd);
+      await navigator.clipboard.writeText(cmd);
       return true;
-    } catch (e) {
-      console.warn("[listening-stats] Clipboard copy failed", e);
-      return false;
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = cmd;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        return true;
+      } catch (e) {
+        console.warn("[listening-stats] Clipboard copy failed", e);
+        return false;
+      }
     }
   }
 

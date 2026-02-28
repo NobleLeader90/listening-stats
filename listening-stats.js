@@ -589,12 +589,18 @@
     try {
       localStorage.removeItem(LS_KEYS.MIGRATION_BACKUP);
     } catch (e) {
-      console.warn("[listening-stats] Failed to remove migration backup from localStorage", e);
+      console.warn(
+        "[listening-stats] Failed to remove migration backup from localStorage",
+        e
+      );
     }
     try {
       localStorage.removeItem(LS_KEYS.MIGRATION_VERSION);
     } catch (e) {
-      console.warn("[listening-stats] Failed to remove migration version from localStorage", e);
+      console.warn(
+        "[listening-stats] Failed to remove migration version from localStorage",
+        e
+      );
     }
     try {
       await deleteDB(BACKUP_DB_NAME);
@@ -687,7 +693,9 @@
       if (!dedupDone) {
         const dedupResult = await runDedup(db);
         if (dedupResult.removed > 0) {
-          Spicetify?.showNotification?.(`Cleaned up ${dedupResult.removed} duplicate entries`);
+          Spicetify?.showNotification?.(
+            `Cleaned up ${dedupResult.removed} duplicate entries`
+          );
         }
         localStorage.setItem(LS_KEYS.DEDUP_V2_DONE, "1");
       }
@@ -722,7 +730,9 @@
           tx.store.delete(event.id);
         }
         await tx.done;
-        log(` Removed ${toDelete.length} duplicate events across ${affectedTracks.size} tracks`);
+        log(
+          ` Removed ${toDelete.length} duplicate events across ${affectedTracks.size} tracks`
+        );
       }
       return { removed: toDelete.length, affectedTracks: affectedTracks.size };
     } catch (e) {
@@ -734,7 +744,11 @@
     try {
       const db = await getDB();
       const range = IDBKeyRange.only(event.startedAt);
-      const existing = await db.getAllFromIndex(STORE_NAME, "by-startedAt", range);
+      const existing = await db.getAllFromIndex(
+        STORE_NAME,
+        "by-startedAt",
+        range
+      );
       if (existing.some((e) => e.trackUri === event.trackUri)) {
         warn(" Duplicate event blocked:", event.trackName);
         return false;
@@ -925,16 +939,23 @@
   async function writePlayEvent(totalPlayedMs, skipped) {
     if (!previousTrackData) return;
     if (isTrackingPaused()) {
-      log("Tracking paused \u2014 skipping write for:", previousTrackData.trackName);
+      log("Tracking paused: skipping write for:", previousTrackData.trackName);
       return;
     }
     if (isSkipRepeatsEnabled() && previousTrackData.trackUri === lastRecordedUri) {
-      log("Skip-repeats: suppressed consecutive play for:", previousTrackData.trackName);
+      log(
+        "Skip-repeats: suppressed consecutive play for:",
+        previousTrackData.trackName
+      );
       return;
     }
     const now = Date.now();
     if (previousTrackData.trackUri === lastWrittenUri && now - lastWrittenAt < DEDUP_WINDOW_MS) {
-      log("Dedup: suppressed duplicate write for", previousTrackData.trackName, `(${now - lastWrittenAt}ms since last write)`);
+      log(
+        "Dedup: suppressed duplicate write for",
+        previousTrackData.trackName,
+        `(${now - lastWrittenAt}ms since last write)`
+      );
       return;
     }
     if (skipped === void 0) {
@@ -1717,7 +1738,8 @@
       if (existing) {
         existing.count++;
         existing.totalMs += e.playedMs;
-        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
+        if (e.startedAt > existing.lastPlayedAt)
+          existing.lastPlayedAt = e.startedAt;
       } else {
         trackMap.set(e.trackUri, {
           trackUri: e.trackUri,
@@ -1733,7 +1755,8 @@
     const topTracks = Array.from(trackMap.values()).sort((a, b) => {
       if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
       if (b.count !== a.count) return b.count - a.count;
-      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      if (b.lastPlayedAt !== a.lastPlayedAt)
+        return b.lastPlayedAt - a.lastPlayedAt;
       return a.trackUri.localeCompare(b.trackUri);
     }).slice(0, 10).map((t, i) => ({
       trackUri: t.trackUri,
@@ -1751,7 +1774,8 @@
       if (existing) {
         existing.count++;
         existing.totalMs += e.playedMs;
-        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
+        if (e.startedAt > existing.lastPlayedAt)
+          existing.lastPlayedAt = e.startedAt;
       } else {
         artistMap.set(key, {
           artistUri: e.artistUri,
@@ -1765,7 +1789,8 @@
     const topArtistAggregated = Array.from(artistMap.values()).sort((a, b) => {
       if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
       if (b.count !== a.count) return b.count - a.count;
-      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      if (b.lastPlayedAt !== a.lastPlayedAt)
+        return b.lastPlayedAt - a.lastPlayedAt;
       const aKey = a.artistUri || a.artistName;
       const bKey = b.artistUri || b.artistName;
       return aKey.localeCompare(bKey);
@@ -1804,7 +1829,8 @@
       if (existing) {
         existing.trackCount++;
         existing.totalMs += e.playedMs;
-        if (e.startedAt > existing.lastPlayedAt) existing.lastPlayedAt = e.startedAt;
+        if (e.startedAt > existing.lastPlayedAt)
+          existing.lastPlayedAt = e.startedAt;
       } else {
         albumMap.set(e.albumUri, {
           albumUri: e.albumUri,
@@ -1820,7 +1846,8 @@
     const topAlbums = Array.from(albumMap.values()).sort((a, b) => {
       if (b.totalMs !== a.totalMs) return b.totalMs - a.totalMs;
       if (b.trackCount !== a.trackCount) return b.trackCount - a.trackCount;
-      if (b.lastPlayedAt !== a.lastPlayedAt) return b.lastPlayedAt - a.lastPlayedAt;
+      if (b.lastPlayedAt !== a.lastPlayedAt)
+        return b.lastPlayedAt - a.lastPlayedAt;
       return a.albumUri.localeCompare(b.albumUri);
     }).slice(0, 10).map((a) => ({
       ...a,
@@ -1859,9 +1886,11 @@
     const periodDates = new Set(
       events.map((e) => new Date(e.startedAt).toISOString().split("T")[0])
     );
-    const allDates = Array.from(new Set(
-      allEvents.map((e) => new Date(e.startedAt).toISOString().split("T")[0])
-    ));
+    const allDates = Array.from(
+      new Set(
+        allEvents.map((e) => new Date(e.startedAt).toISOString().split("T")[0])
+      )
+    );
     const totalTimeMs = events.reduce((sum, e) => sum + e.playedMs, 0);
     const skipEvents = events.length - completedEvents.length;
     return {
