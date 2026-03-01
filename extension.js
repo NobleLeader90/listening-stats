@@ -1137,15 +1137,8 @@
   var _visibilityHandler = null;
   function initPoller(providerType) {
     const win = window;
-    if (win.__lsSongHandler) {
-      Spicetify.Player.removeEventListener("songchange", win.__lsSongHandler);
-    }
-    if (win.__lsPauseHandler) {
-      Spicetify.Player.removeEventListener("onplaypause", win.__lsPauseHandler);
-    }
-    if (win.__lsProgressHandler) {
-      Spicetify.Player.removeEventListener("onprogress", win.__lsProgressHandler);
-    }
+    if (win.__lsPollerInitialized) return;
+    win.__lsPollerInitialized = true;
     activeProviderType = providerType;
     captureCurrentTrackData();
     activeSongChangeHandler = () => {
@@ -1218,40 +1211,6 @@
     document.addEventListener("visibilitychange", _visibilityHandler);
   }
   function destroyPoller() {
-    if (activeSongChangeHandler) {
-      Spicetify.Player.removeEventListener("songchange", activeSongChangeHandler);
-      activeSongChangeHandler = null;
-    }
-    Spicetify.Player.removeEventListener("onplaypause", handlePlayPause);
-    if (progressHandler) {
-      Spicetify.Player.removeEventListener("onprogress", progressHandler);
-      progressHandler = null;
-    }
-    const win = window;
-    win.__lsSongHandler = null;
-    win.__lsPauseHandler = null;
-    win.__lsProgressHandler = null;
-    lastProgressMs = 0;
-    lastWrittenUri = null;
-    lastRecordedUri = null;
-    lastWrittenAt = 0;
-    if (_visibilityHandler) {
-      document.removeEventListener("visibilitychange", _visibilityHandler);
-      _visibilityHandler = null;
-    }
-    if (pollIntervalId !== null) {
-      clearInterval(pollIntervalId);
-      pollIntervalId = null;
-    }
-    activeProviderType = null;
-    previousTrackData = null;
-    _trackingStatus = {
-      healthy: true,
-      lastSuccessfulWriteAt: null,
-      lastSuccessfulTrackName: null,
-      lastError: null
-    };
-    _trackingFailureNotified = false;
   }
 
   // src/utils/streak.ts
@@ -1825,20 +1784,8 @@
       defaultPeriod: "today",
       init() {
         resetDBPromise();
-        initPoller("local");
-        startupIntegrityCheck().then((result) => {
-          if (!result.ok) {
-            setTrackingHealthy(false, result.error);
-            console.warn("[listening-stats] Startup integrity check failed:", result.error);
-            Spicetify?.showNotification?.(
-              "Tracking database issue detected \u2014 try restarting Spotify",
-              true
-            );
-          }
-        });
       },
       destroy() {
-        destroyPoller();
         resetDBPromise();
       },
       async calculateStats(period) {
@@ -2453,6 +2400,17 @@
     }
   };
   async function main() {
+    initPoller("local");
+    startupIntegrityCheck().then((result) => {
+      if (!result.ok) {
+        setTrackingHealthy(false, result.error);
+        console.warn("[listening-stats] Startup integrity check failed:", result.error);
+        Spicetify?.showNotification?.(
+          "Tracking database issue detected \u2014 try restarting Spotify",
+          true
+        );
+      }
+    });
     let providerType = getSelectedProviderType();
     if (!providerType && hasExistingData()) {
       providerType = "local";
