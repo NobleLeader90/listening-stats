@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.3.70
+
+### Added
+
+- **Tracking health indicator** — green/red status dot in header shows whether local tracking is active, with Spicetify tooltip on hover
+- **Write-failure notifications** — toast alert on first IndexedDB write failure per session with actionable hint, suppressed on subsequent failures to avoid spam
+- **Startup integrity check** — verifies IndexedDB store, indexes, and write roundtrip on local provider init; shows toast and marks unhealthy on failure
+- **Sleep/wake recovery** — visibilitychange handler re-verifies tracking pipeline and reconnects stale DB connections after system resume
+- **Test Tracking button** — manual pipeline test in Settings > Advanced with running/success/failure states
+- **Last Tracked display** — shows most recent tracked song and relative time in Settings > Advanced
+- **Console debug API** — `window.ListeningStats` expanded with `getTrackingStatus()`, `getLogs()`, `getLastError()`, `testWrite()` for diagnosing tracking issues
+- **Ring buffer logging** — last 100 log entries captured in memory regardless of logging toggle, accessible via console API
+
+### Changed
+
+- **Extension loading** — background extension renamed to `extension.js` and loaded via `subfiles_extension` in manifest.json instead of requiring separate Spicetify extension registration
+- **Init retry cap** — initialization retries capped at 50 attempts (5 seconds) with user-facing error notification on timeout instead of polling forever
+
+### Fixed
+
+- **Silent tracking failure** — tracking pipeline failures now detected and surfaced to user instead of silently losing data (GitHub #16)
+
 ## 1.3.68
 
 ### Added

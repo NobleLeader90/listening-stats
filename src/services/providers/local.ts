@@ -10,8 +10,9 @@ import {
   getAllPlayEvents,
   getPlayEventsByTimeRange,
   resetDBPromise,
+  startupIntegrityCheck,
 } from "../storage";
-import { destroyPoller, initPoller } from "../tracker";
+import { destroyPoller, initPoller, setTrackingHealthy } from "../tracker";
 import type { TrackingProvider } from "./types";
 
 const PERIODS = ["today", "this_week", "this_month", "all_time"] as const;
@@ -33,6 +34,17 @@ export function createLocalProvider(): TrackingProvider {
     init() {
       resetDBPromise();
       initPoller("local");
+      // Run integrity check concurrently — do not block listener setup
+      startupIntegrityCheck().then((result) => {
+        if (!result.ok) {
+          setTrackingHealthy(false, result.error);
+          console.warn("[listening-stats] Startup integrity check failed:", result.error);
+          Spicetify?.showNotification?.(
+            "Tracking database issue detected \u2014 try restarting Spotify",
+            true,
+          );
+        }
+      });
     },
 
     destroy() {

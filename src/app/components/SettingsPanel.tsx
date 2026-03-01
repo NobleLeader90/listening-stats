@@ -16,10 +16,11 @@ import {
 import { clearApiCaches, resetRateLimit } from "../../services/spotify-api";
 import { clearStatsCache } from "../../services/stats";
 import * as Statsfm from "../../services/statsfm";
-import { clearAllData as clearIndexedDB, deduplicateExistingEvents } from "../../services/storage";
+import { clearAllData as clearIndexedDB, deduplicateExistingEvents, runTrackingTest } from "../../services/storage";
 import { error } from "../../services/logger";
 import {
   clearPollingData,
+  getTrackingStatus,
   isLoggingEnabled,
   isSkipRepeatsEnabled,
   isTrackingPaused,
@@ -32,7 +33,7 @@ import { ListeningStats, ProviderType } from "../../types/listeningstats";
 import { Icons } from "../icons";
 import { LS_KEYS, EVENTS, clearAllLocalStorage } from "../../constants";
 
-const { useState, useReducer } = Spicetify.React;
+const { useState, useEffect, useReducer } = Spicetify.React;
 
 // --- Reducer: Provider Form State ---
 
@@ -198,6 +199,14 @@ const PROVIDER_NAMES: Record<ProviderType, string> = {
   statsfm: "stats.fm",
 };
 
+function formatTimeAgo(ts: number): string {
+  const diff = Math.floor((Date.now() - ts) / 1000);
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} hr ago`;
+  return `${Math.floor(diff / 86400)} days ago`;
+}
+
 export function SettingsPanel({
   onRefresh,
   onCheckUpdates,
@@ -236,6 +245,21 @@ export function SettingsPanel({
     skipRepeats: isSkipRepeatsEnabled(),
     dedupRunning: false,
   });
+
+  const [lastTracked, setLastTracked] = useState<{ name: string | null; time: number | null }>({ name: null, time: null });
+
+  useEffect(() => {
+    if (currentProvider !== "local") return;
+    const update = () => {
+      const status = getTrackingStatus();
+      setLastTracked({ name: status.lastSuccessfulTrackName, time: status.lastSuccessfulWriteAt });
+    };
+    update();
+    const id = setInterval(update, 5000);
+    return () => clearInterval(id);
+  }, [currentProvider]);
+
+  const [testResult, setTestResult] = useState<"idle" | "running" | "ok" | "fail">("idle");
 
   const lfmConnected = LastFm.isConnected();
   const lfmConfig = LastFm.getConfig();
@@ -754,6 +778,46 @@ export function SettingsPanel({
                   dispatchAdv({ type: "SET_SKIP_REPEATS", value: next });
                 }}
               />
+            </div>
+
+            {lastTracked.name && lastTracked.time && (
+              <div className="settings-toggle-row">
+                <div className="settings-toggle-info">
+                  <h4 className="settings-section-title">Last Tracked</h4>
+                  <p className="settings-toggle-desc">
+                    {lastTracked.name} — {formatTimeAgo(lastTracked.time)}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="settings-toggle-row">
+              <div className="settings-toggle-info">
+                <h4 className="settings-section-title">Test Tracking</h4>
+                <p className="settings-toggle-desc">
+                  Write a test event to the database and verify it can be read back.
+                </p>
+              </div>
+              <button
+                className="footer-btn"
+                disabled={testResult === "running"}
+                onClick={async () => {
+                  setTestResult("running");
+                  try {
+                    const result = await runTrackingTest();
+                    setTestResult(result.ok ? "ok" : "fail");
+                    Spicetify.showNotification(
+                      result.ok ? "Tracking is working" : `Tracking broken: ${result.error}`,
+                      !result.ok,
+                    );
+                  } catch {
+                    setTestResult("fail");
+                    Spicetify.showNotification("Tracking test failed", true);
+                  }
+                }}
+              >
+                {testResult === "running" ? "Testing..." : testResult === "ok" ? "Passed" : testResult === "fail" ? "Failed — Retry" : "Test"}
+              </button>
             </div>
           </>
         )}

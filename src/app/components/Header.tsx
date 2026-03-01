@@ -1,8 +1,10 @@
 import { ProviderType } from "../../types/listeningstats";
+import { getTrackingStatus, type TrackingStatus } from "../../services/tracker";
 import { renderMarkdown } from "../format";
 import { Icons } from "../icons";
 
 const { useState, useEffect, useRef } = Spicetify.React;
+const { TooltipWrapper } = Spicetify.ReactComponent;
 
 interface HeaderProps {
   onShare?: () => void;
@@ -54,6 +56,22 @@ export function Header({
   onToggleSettings,
   providerType,
 }: HeaderProps) {
+  const [trackingHealth, setTrackingHealth] = useState<TrackingStatus | null>(null);
+
+  useEffect(() => {
+    if (providerType !== "local") {
+      setTrackingHealth(null);
+      return;
+    }
+    // Initial read
+    setTrackingHealth(getTrackingStatus());
+    // Poll every 5 seconds
+    const id = setInterval(() => {
+      setTrackingHealth(getTrackingStatus());
+    }, 5000);
+    return () => clearInterval(id);
+  }, [providerType]);
+
   return (
     <div className="stats-header">
       <div className="stats-header-row">
@@ -64,6 +82,17 @@ export function Header({
             {providerType && (
               <span className="provider-badge">
                 via {PROVIDER_NAMES[providerType]}
+                {trackingHealth && (
+                  <TooltipWrapper
+                    label={trackingHealth.healthy ? "Tracking active" : `Tracking issue: ${trackingHealth.lastError || "unknown"}`}
+                    placement="top"
+                  >
+                    <span
+                      className={`status-dot ${trackingHealth.healthy ? "green" : "red"}`}
+                      style={{ display: "inline-block", marginLeft: 6, verticalAlign: "middle" }}
+                    />
+                  </TooltipWrapper>
+                )}
               </span>
             )}
           </p>

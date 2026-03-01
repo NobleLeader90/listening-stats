@@ -1,13 +1,39 @@
 import { EVENTS, LS_KEYS } from "../constants";
 import { PlayEvent, PollingData, ProviderType } from "../types/listeningstats";
 import { log, warn } from "./logger";
-import { addPlayEvent } from "./storage";
+import { addPlayEvent, getDB } from "./storage";
 
 export { isLoggingEnabled, setLoggingEnabled } from "./logger";
 
 const DEFAULT_THRESHOLD_MS = 10000; // 10 seconds per user decision
 
 let activeProviderType: ProviderType | null = null;
+
+export interface TrackingStatus {
+  healthy: boolean;
+  lastSuccessfulWriteAt: number | null;
+  lastSuccessfulTrackName: string | null;
+  lastError: string | null;
+}
+
+let _trackingStatus: TrackingStatus = {
+  healthy: true,
+  lastSuccessfulWriteAt: null,
+  lastSuccessfulTrackName: null,
+  lastError: null,
+};
+
+let _trackingFailureNotified = false;
+
+export function getTrackingStatus(): TrackingStatus {
+  return { ..._trackingStatus };
+}
+
+export function setTrackingHealthy(healthy: boolean, error?: string): void {
+  _trackingStatus.healthy = healthy;
+  if (error !== undefined) _trackingStatus.lastError = error;
+  else if (healthy) _trackingStatus.lastError = null;
+}
 
 const _warnedKeys = new Set<string>();
 function warnOnce(key: string, msg: string, err?: unknown): void {
@@ -313,6 +339,11 @@ async function writePlayEvent(
       // Only update polling data when event was actually written to IndexedDB
       lastWrittenUri = previousTrackData.trackUri;
       lastWrittenAt = Date.now();
+      _trackingStatus.healthy = true;
+      _trackingStatus.lastSuccessfulWriteAt = Date.now();
+      _trackingStatus.lastSuccessfulTrackName = previousTrackData.trackName;
+      _trackingStatus.lastError = null;
+      _trackingFailureNotified = false;
       if (!skipped && isSkipRepeatsEnabled()) {
         lastRecordedUri = previousTrackData.trackUri; // update skip-repeats tracker
       }
@@ -330,7 +361,16 @@ async function writePlayEvent(
       log("Dedup guard blocked duplicate event, polling data unchanged");
     }
   } catch (err) {
+    _trackingStatus.healthy = false;
+    _trackingStatus.lastError = err instanceof Error ? err.message : String(err);
     warn(" Failed to write play event:", err);
+    if (!_trackingFailureNotified) {
+      _trackingFailureNotified = true;
+      Spicetify?.showNotification?.(
+        "Tracking issue detected \u2014 try restarting Spotify",
+        true,
+      );
+    }
   }
 }
 
@@ -373,6 +413,7 @@ function handleProgress(): void {
 
 let pollIntervalId: number | null = null;
 let activeSongChangeHandler: (() => void) | null = null;
+let _visibilityHandler: (() => void) | null = null;
 
 export function initPoller(providerType: ProviderType): void {
   const win = window as any;
@@ -443,6 +484,38 @@ export function initPoller(providerType: ProviderType): void {
       win.__lsProgressHandler = progressHandler;
     }
   }, 300_000) as unknown as number; // Check every 5 minutes
+
+  // Sleep/wake re-verification: when the page becomes visible again, re-check
+  // listeners and ping the DB to force reconnect if the connection went stale
+  if (_visibilityHandler) {
+    document.removeEventListener("visibilitychange", _visibilityHandler);
+  }
+  _visibilityHandler = () => {
+    if (document.visibilityState !== "visible") return;
+    // Re-verify event listeners
+    if (!win.__lsSongHandler) {
+      warn("Visibility restored: songchange listener lost, re-registering");
+      activeSongChangeHandler = () => {
+        lastProgressMs = 0;
+        handleSongChange().catch((e) => {
+          warn("songchange handler error:", e);
+        });
+        captureCurrentTrackData();
+      };
+      progressHandler = handleProgress;
+      Spicetify.Player.addEventListener("songchange", activeSongChangeHandler);
+      Spicetify.Player.addEventListener("onplaypause", handlePlayPause);
+      Spicetify.Player.addEventListener("onprogress", progressHandler);
+      win.__lsSongHandler = activeSongChangeHandler;
+      win.__lsPauseHandler = handlePlayPause;
+      win.__lsProgressHandler = progressHandler;
+    }
+    // Ping DB to force reconnect if stale
+    getDB().catch(() => {
+      warn("Visibility restored: DB ping failed, connection will reconnect on next write");
+    });
+  };
+  document.addEventListener("visibilitychange", _visibilityHandler);
 }
 
 export function destroyPoller(): void {
@@ -465,10 +538,22 @@ export function destroyPoller(): void {
   lastRecordedUri = null;
   lastWrittenAt = 0;
 
+  if (_visibilityHandler) {
+    document.removeEventListener("visibilitychange", _visibilityHandler);
+    _visibilityHandler = null;
+  }
+
   if (pollIntervalId !== null) {
     clearInterval(pollIntervalId);
     pollIntervalId = null;
   }
   activeProviderType = null;
   previousTrackData = null;
+  _trackingStatus = {
+    healthy: true,
+    lastSuccessfulWriteAt: null,
+    lastSuccessfulTrackName: null,
+    lastError: null,
+  };
+  _trackingFailureNotified = false;
 }

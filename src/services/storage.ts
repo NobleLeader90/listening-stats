@@ -373,3 +373,73 @@ export async function clearAllData(): Promise<void> {
   resetDBPromise();
   log("IndexedDB data cleared");
 }
+
+/**
+ * Writes a test entry and immediately deletes it to verify the DB is writable.
+ * Shared by startupIntegrityCheck() and the window.ListeningStats.testWrite() console API.
+ */
+export async function runTrackingTest(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const db = await getDB();
+    // Write test entry
+    const testEvent = {
+      trackUri: "__ls_test__",
+      trackName: "__test__",
+      artistName: "__test__",
+      artistUri: "__test__",
+      albumName: "__test__",
+      albumUri: "__test__",
+      durationMs: 0,
+      playedMs: 0,
+      startedAt: Date.now(),
+      endedAt: Date.now(),
+      type: "play" as const,
+    };
+    await db.add(STORE_NAME, testEvent);
+    // Clean up: find and delete all test entries
+    const testEntries = await db.getAllFromIndex(
+      STORE_NAME,
+      "by-trackUri",
+      IDBKeyRange.only("__ls_test__"),
+    );
+    if (testEntries.length > 0) {
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      for (const e of testEntries) {
+        if ((e as any).id) await tx.store.delete((e as any).id);
+      }
+      await tx.done;
+    }
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * Verifies DB is accessible, object store exists, required indexes are intact,
+ * and a write+delete roundtrip succeeds. Called on local provider init.
+ */
+export async function startupIntegrityCheck(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const db = await getDB();
+    // Check object store exists
+    if (!db.objectStoreNames.contains(STORE_NAME)) {
+      return { ok: false, error: "Object store missing" };
+    }
+    // Verify required indexes
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.store;
+    const requiredIndexes = ["by-startedAt", "by-trackUri", "by-artistUri", "by-type"];
+    for (const idx of requiredIndexes) {
+      if (!store.indexNames.contains(idx)) {
+        tx.abort();
+        return { ok: false, error: `Index missing: ${idx}` };
+      }
+    }
+    await tx.done.catch(() => {});
+    // Write+delete roundtrip
+    return runTrackingTest();
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
