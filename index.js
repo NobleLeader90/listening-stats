@@ -75,6 +75,11 @@ var ListeningStatsApp = (() => {
   });
 
   // src/services/logger.ts
+  function pushRing(level, msg) {
+    _ring[_ringIdx % RING_SIZE] = { level, msg, ts: Date.now() };
+    _ringIdx++;
+    if (level === "error") _lastError = msg;
+  }
   function isLoggingEnabled() {
     try {
       return localStorage.getItem(LS_KEYS.LOGGING) === "1";
@@ -92,17 +97,25 @@ var ListeningStatsApp = (() => {
     }
   }
   function log(...args) {
+    pushRing("log", args.map(String).join(" "));
     if (isLoggingEnabled()) console.log("[ListeningStats]", ...args);
   }
   function warn(...args) {
+    pushRing("warn", args.map(String).join(" "));
     if (isLoggingEnabled()) console.warn("[ListeningStats]", ...args);
   }
   function error(...args) {
+    pushRing("error", args.map(String).join(" "));
     if (isLoggingEnabled()) console.error("[ListeningStats]", ...args);
   }
+  var RING_SIZE, _ring, _ringIdx, _lastError;
   var init_logger = __esm({
     "src/services/logger.ts"() {
       init_constants();
+      RING_SIZE = 100;
+      _ring = [];
+      _ringIdx = 0;
+      _lastError = null;
     }
   });
 
@@ -364,7 +377,9 @@ var ListeningStatsApp = (() => {
     getAllPlayEvents: () => getAllPlayEvents,
     getDB: () => getDB,
     getPlayEventsByTimeRange: () => getPlayEventsByTimeRange,
-    resetDBPromise: () => resetDBPromise
+    resetDBPromise: () => resetDBPromise,
+    runTrackingTest: () => runTrackingTest,
+    startupIntegrityCheck: () => startupIntegrityCheck
   });
   async function backupBeforeMigration() {
     let events = [];
@@ -644,6 +659,62 @@ var ListeningStatsApp = (() => {
     await db.clear(STORE_NAME);
     resetDBPromise();
     log("IndexedDB data cleared");
+  }
+  async function runTrackingTest() {
+    try {
+      const db = await getDB();
+      const testEvent = {
+        trackUri: "__ls_test__",
+        trackName: "__test__",
+        artistName: "__test__",
+        artistUri: "__test__",
+        albumName: "__test__",
+        albumUri: "__test__",
+        durationMs: 0,
+        playedMs: 0,
+        startedAt: Date.now(),
+        endedAt: Date.now(),
+        type: "play"
+      };
+      await db.add(STORE_NAME, testEvent);
+      const testEntries = await db.getAllFromIndex(
+        STORE_NAME,
+        "by-trackUri",
+        IDBKeyRange.only("__ls_test__")
+      );
+      if (testEntries.length > 0) {
+        const tx = db.transaction(STORE_NAME, "readwrite");
+        for (const e of testEntries) {
+          if (e.id) await tx.store.delete(e.id);
+        }
+        await tx.done;
+      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+  async function startupIntegrityCheck() {
+    try {
+      const db = await getDB();
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        return { ok: false, error: "Object store missing" };
+      }
+      const tx = db.transaction(STORE_NAME, "readonly");
+      const store = tx.store;
+      const requiredIndexes = ["by-startedAt", "by-trackUri", "by-artistUri", "by-type"];
+      for (const idx of requiredIndexes) {
+        if (!store.indexNames.contains(idx)) {
+          tx.abort();
+          return { ok: false, error: `Index missing: ${idx}` };
+        }
+      }
+      await tx.done.catch(() => {
+      });
+      return runTrackingTest();
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
   }
   var DB_NAME, DB_VERSION, STORE_NAME, BACKUP_DB_NAME, dbPromise;
   var init_storage = __esm({
@@ -1015,6 +1086,21 @@ var ListeningStatsApp = (() => {
   init_logger();
   var DEFAULT_THRESHOLD_MS = 1e4;
   var activeProviderType = null;
+  var _trackingStatus = {
+    healthy: true,
+    lastSuccessfulWriteAt: null,
+    lastSuccessfulTrackName: null,
+    lastError: null
+  };
+  var _trackingFailureNotified = false;
+  function getTrackingStatus() {
+    return { ..._trackingStatus };
+  }
+  function setTrackingHealthy(healthy, error2) {
+    _trackingStatus.healthy = healthy;
+    if (error2 !== void 0) _trackingStatus.lastError = error2;
+    else if (healthy) _trackingStatus.lastError = null;
+  }
   var _warnedKeys = /* @__PURE__ */ new Set();
   function warnOnce(key, msg, err) {
     if (_warnedKeys.has(key)) return;
@@ -1251,6 +1337,11 @@ var ListeningStatsApp = (() => {
       if (written) {
         lastWrittenUri = previousTrackData.trackUri;
         lastWrittenAt = Date.now();
+        _trackingStatus.healthy = true;
+        _trackingStatus.lastSuccessfulWriteAt = Date.now();
+        _trackingStatus.lastSuccessfulTrackName = previousTrackData.trackName;
+        _trackingStatus.lastError = null;
+        _trackingFailureNotified = false;
         if (!skipped && isSkipRepeatsEnabled()) {
           lastRecordedUri = previousTrackData.trackUri;
         }
@@ -1267,7 +1358,16 @@ var ListeningStatsApp = (() => {
         log("Dedup guard blocked duplicate event, polling data unchanged");
       }
     } catch (err) {
+      _trackingStatus.healthy = false;
+      _trackingStatus.lastError = err instanceof Error ? err.message : String(err);
       warn(" Failed to write play event:", err);
+      if (!_trackingFailureNotified) {
+        _trackingFailureNotified = true;
+        Spicetify?.showNotification?.(
+          "Tracking issue detected \u2014 try restarting Spotify",
+          true
+        );
+      }
     }
   }
   function handlePlayPause() {
@@ -1299,6 +1399,7 @@ var ListeningStatsApp = (() => {
   }
   var pollIntervalId = null;
   var activeSongChangeHandler = null;
+  var _visibilityHandler = null;
   function initPoller(providerType) {
     const win = window;
     if (win.__lsSongHandler) {
@@ -1353,6 +1454,33 @@ var ListeningStatsApp = (() => {
         win.__lsProgressHandler = progressHandler;
       }
     }, 3e5);
+    if (_visibilityHandler) {
+      document.removeEventListener("visibilitychange", _visibilityHandler);
+    }
+    _visibilityHandler = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!win.__lsSongHandler) {
+        warn("Visibility restored: songchange listener lost, re-registering");
+        activeSongChangeHandler = () => {
+          lastProgressMs = 0;
+          handleSongChange().catch((e) => {
+            warn("songchange handler error:", e);
+          });
+          captureCurrentTrackData();
+        };
+        progressHandler = handleProgress;
+        Spicetify.Player.addEventListener("songchange", activeSongChangeHandler);
+        Spicetify.Player.addEventListener("onplaypause", handlePlayPause);
+        Spicetify.Player.addEventListener("onprogress", progressHandler);
+        win.__lsSongHandler = activeSongChangeHandler;
+        win.__lsPauseHandler = handlePlayPause;
+        win.__lsProgressHandler = progressHandler;
+      }
+      getDB().catch(() => {
+        warn("Visibility restored: DB ping failed, connection will reconnect on next write");
+      });
+    };
+    document.addEventListener("visibilitychange", _visibilityHandler);
   }
   function destroyPoller() {
     if (activeSongChangeHandler) {
@@ -1372,12 +1500,23 @@ var ListeningStatsApp = (() => {
     lastWrittenUri = null;
     lastRecordedUri = null;
     lastWrittenAt = 0;
+    if (_visibilityHandler) {
+      document.removeEventListener("visibilitychange", _visibilityHandler);
+      _visibilityHandler = null;
+    }
     if (pollIntervalId !== null) {
       clearInterval(pollIntervalId);
       pollIntervalId = null;
     }
     activeProviderType = null;
     previousTrackData = null;
+    _trackingStatus = {
+      healthy: true,
+      lastSuccessfulWriteAt: null,
+      lastSuccessfulTrackName: null,
+      lastError: null
+    };
+    _trackingFailureNotified = false;
   }
 
   // src/utils/streak.ts
@@ -1871,6 +2010,16 @@ var ListeningStatsApp = (() => {
       init() {
         resetDBPromise();
         initPoller("local");
+        startupIntegrityCheck().then((result) => {
+          if (!result.ok) {
+            setTrackingHealthy(false, result.error);
+            console.warn("[listening-stats] Startup integrity check failed:", result.error);
+            Spicetify?.showNotification?.(
+              "Tracking database issue detected \u2014 try restarting Spotify",
+              true
+            );
+          }
+        });
       },
       destroy() {
         destroyPoller();
@@ -2551,7 +2700,7 @@ var ListeningStatsApp = (() => {
   var INSTALL_CMD_WINDOWS = `irm https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.ps1 | iex`;
   function getCurrentVersion() {
     try {
-      return "1.3.67";
+      return "1.3.71";
     } catch {
       return "0.0.0";
     }
@@ -2892,7 +3041,7 @@ var ListeningStatsApp = (() => {
   init_storage();
   init_logger();
   init_constants();
-  var { useState, useReducer } = Spicetify.React;
+  var { useState, useEffect, useReducer } = Spicetify.React;
   function providerFormReducer(state, action) {
     switch (action.type) {
       case "TOGGLE_PICKER":
@@ -2975,6 +3124,13 @@ var ListeningStatsApp = (() => {
     lastfm: "Last.fm",
     statsfm: "stats.fm"
   };
+  function formatTimeAgo(ts) {
+    const diff = Math.floor((Date.now() - ts) / 1e3);
+    if (diff < 60) return "just now";
+    if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} hr ago`;
+    return `${Math.floor(diff / 86400)} days ago`;
+  }
   function SettingsPanel({
     onRefresh,
     onCheckUpdates,
@@ -3009,6 +3165,18 @@ var ListeningStatsApp = (() => {
       skipRepeats: isSkipRepeatsEnabled(),
       dedupRunning: false
     });
+    const [lastTracked, setLastTracked] = useState({ name: null, time: null });
+    useEffect(() => {
+      if (currentProvider !== "local") return;
+      const update = () => {
+        const status = getTrackingStatus();
+        setLastTracked({ name: status.lastSuccessfulTrackName, time: status.lastSuccessfulWriteAt });
+      };
+      update();
+      const id = setInterval(update, 5e3);
+      return () => clearInterval(id);
+    }, [currentProvider]);
+    const [testResult, setTestResult] = useState("idle");
     const lfmConnected = isConnected();
     const lfmConfig = getConfig();
     const sfmConnected = isConnected2();
@@ -3383,6 +3551,27 @@ var ListeningStatsApp = (() => {
           dispatchAdv({ type: "SET_SKIP_REPEATS", value: next });
         }
       }
+    )), lastTracked.name && lastTracked.time && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-info" }, /* @__PURE__ */ Spicetify.React.createElement("h4", { className: "settings-section-title" }, "Last Tracked"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "settings-toggle-desc" }, lastTracked.name, " \u2014 ", formatTimeAgo(lastTracked.time)))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-toggle-info" }, /* @__PURE__ */ Spicetify.React.createElement("h4", { className: "settings-section-title" }, "Test Tracking"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "settings-toggle-desc" }, "Write a test event to the database and verify it can be read back.")), /* @__PURE__ */ Spicetify.React.createElement(
+      "button",
+      {
+        className: "footer-btn",
+        disabled: testResult === "running",
+        onClick: async () => {
+          setTestResult("running");
+          try {
+            const result = await runTrackingTest();
+            setTestResult(result.ok ? "ok" : "fail");
+            Spicetify.showNotification(
+              result.ok ? "Tracking is working" : `Tracking broken: ${result.error}`,
+              !result.ok
+            );
+          } catch {
+            setTestResult("fail");
+            Spicetify.showNotification("Tracking test failed", true);
+          }
+        }
+      },
+      testResult === "running" ? "Testing..." : testResult === "ok" ? "Passed" : testResult === "fail" ? "Failed \u2014 Retry" : "Test"
     ))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-actions-row" }, /* @__PURE__ */ Spicetify.React.createElement(
       "button",
       {
@@ -3567,7 +3756,7 @@ var ListeningStatsApp = (() => {
   }
 
   // src/app/components/AnimatedNumber.tsx
-  var { useState: useState2, useEffect, useRef } = Spicetify.React;
+  var { useState: useState2, useEffect: useEffect2, useRef } = Spicetify.React;
   function AnimatedNumber({
     value,
     duration = 800,
@@ -3575,7 +3764,7 @@ var ListeningStatsApp = (() => {
   }) {
     const [display, setDisplay] = useState2("0");
     const prevValue = useRef(0);
-    useEffect(() => {
+    useEffect2(() => {
       const start = prevValue.current;
       const end = value;
       prevValue.current = value;
@@ -3627,7 +3816,7 @@ var ListeningStatsApp = (() => {
     periodLabels,
     onPeriodChange
   }) {
-    const { TooltipWrapper } = Spicetify.ReactComponent;
+    const { TooltipWrapper: TooltipWrapper2 } = Spicetify.ReactComponent;
     const payout = estimateArtistPayout(stats.trackCount);
     return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.totalTimeMs, format: formatDurationLong })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Time Listened"), /* @__PURE__ */ Spicetify.React.createElement(
       PeriodTabs,
@@ -3637,11 +3826,11 @@ var ListeningStatsApp = (() => {
         periodLabels,
         onPeriodChange
       }
-    ), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Total number of tracks played (including repeats)", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.trackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks"))), /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Number of different artists you've listened to", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueArtistCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists"))), /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Number of different tracks you've listened to", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueTrackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique"))), stats.lastfmConnected && stats.totalScrobbles ? /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Total plays recorded by Last.fm", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, formatNumber(stats.totalScrobbles)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Scrobbles"))) : null)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Estimated amount Spotify paid artists from your streams ($0.004/stream)", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Spotify paid artists"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Consecutive days with at least one play", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, formatNumber(stats.streakDays)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: stats.newArtistsCount > 0 ? "Artists you listened to for the first time in this period" : "Number of days with at least one play in this period", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, stats.newArtistsCount > 0 ? /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(stats.newArtistsCount)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists")) : /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(stats.listenedDays)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Days Listened")))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "Percentage of tracks skipped before the play threshold", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value red" }, Math.floor(stats.skipRate * 100), "%"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Skip Rate")))))));
+    ), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Total number of tracks played (including repeats)", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.trackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks"))), /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Number of different artists you've listened to", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueArtistCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists"))), /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Number of different tracks you've listened to", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueTrackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique"))), stats.lastfmConnected && stats.totalScrobbles ? /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Total plays recorded by Last.fm", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, formatNumber(stats.totalScrobbles)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Scrobbles"))) : null)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Estimated amount Spotify paid artists from your streams ($0.004/stream)", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Spotify paid artists"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Consecutive days with at least one play", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, formatNumber(stats.streakDays)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: stats.newArtistsCount > 0 ? "Artists you listened to for the first time in this period" : "Number of days with at least one play in this period", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, stats.newArtistsCount > 0 ? /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(stats.newArtistsCount)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists")) : /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(stats.listenedDays)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Days Listened")))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Percentage of tracks skipped before the play threshold", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value red" }, Math.floor(stats.skipRate * 100), "%"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Skip Rate")))))));
   }
 
   // src/app/components/ImageWithRetry.tsx
-  var { useState: useState3, useRef: useRef2, useEffect: useEffect2 } = Spicetify.React;
+  var { useState: useState3, useRef: useRef2, useEffect: useEffect3 } = Spicetify.React;
   function ImageWithRetry({
     src,
     className = "",
@@ -3652,7 +3841,7 @@ var ListeningStatsApp = (() => {
     const [failed, setFailed] = useState3(false);
     const prevSrcRef = useRef2(src);
     const timerRef = useRef2(null);
-    useEffect2(() => {
+    useEffect3(() => {
       if (prevSrcRef.current !== src) {
         prevSrcRef.current = src;
         setAttempt(0);
@@ -3663,7 +3852,7 @@ var ListeningStatsApp = (() => {
         }
       }
     }, [src]);
-    useEffect2(() => {
+    useEffect3(() => {
       return () => {
         if (timerRef.current) {
           clearTimeout(timerRef.current);
@@ -3705,7 +3894,7 @@ var ListeningStatsApp = (() => {
     showLikeButtons = true,
     period = ""
   }) {
-    const { TooltipWrapper } = Spicetify.ReactComponent;
+    const { TooltipWrapper: TooltipWrapper2 } = Spicetify.ReactComponent;
     const itemCount = getPreferences().itemsPerSection;
     return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-lists-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.music } }), "Top Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topTracks.slice(0, itemCount).map((t, i) => /* @__PURE__ */ Spicetify.React.createElement(
       "div",
@@ -3727,7 +3916,7 @@ var ListeningStatsApp = (() => {
             __html: likedTracks.get(t.trackUri) ? Icons.heartFilled : Icons.heart
           }
         }
-      ) : /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper, { label: "No Spotify link, can't save to library", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement(
+      ) : /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "No Spotify link, can't save to library", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement(
         "span",
         {
           className: "heart-btn disabled",
@@ -3812,10 +4001,10 @@ var ListeningStatsApp = (() => {
   }
 
   // src/app/components/LastfmBanner.tsx
-  var { useState: useState4, useEffect: useEffect3 } = Spicetify.React;
+  var { useState: useState4, useEffect: useEffect4 } = Spicetify.React;
 
   // src/app/components/SetupWizard.tsx
-  var { useState: useState5, useEffect: useEffect4 } = Spicetify.React;
+  var { useState: useState5, useEffect: useEffect5 } = Spicetify.React;
   var STEPS = ["choose", "configure", "validate", "success"];
   function SetupWizard({ onComplete }) {
     const [stepIndex, setStepIndex] = useState5(0);
@@ -4018,7 +4207,7 @@ var ListeningStatsApp = (() => {
         });
       }
     };
-    useEffect4(() => {
+    useEffect5(() => {
       runValidation();
     }, []);
     if (error2) {
@@ -4068,7 +4257,7 @@ var ListeningStatsApp = (() => {
     peakHour,
     hourlyUnit = "ms"
   }) {
-    const { TooltipWrapper } = Spicetify.ReactComponent;
+    const { TooltipWrapper: TooltipWrapper2 } = Spicetify.ReactComponent;
     if (!hourlyDistribution.some((h) => h > 0)) {
       return null;
     }
@@ -4082,7 +4271,7 @@ var ListeningStatsApp = (() => {
     return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "activity-title" }, "Activity by Hour"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-peak" }, "Peak: ", /* @__PURE__ */ Spicetify.React.createElement("strong", null, formatHour(peakHour)))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-chart" }, hourlyDistribution.map((val, hr) => {
       const h = val > 0 ? Math.max(val / max * 100, 5) : 0;
       return /* @__PURE__ */ Spicetify.React.createElement(
-        TooltipWrapper,
+        TooltipWrapper2,
         {
           key: hr,
           label: `${formatHour(hr)}: ${formatValue(val)}`,
@@ -4161,7 +4350,7 @@ var ListeningStatsApp = (() => {
   }
 
   // src/app/components/TourOverlay.tsx
-  var { useState: useState6, useEffect: useEffect5, useRef: useRef3, useCallback } = Spicetify.React;
+  var { useState: useState6, useEffect: useEffect6, useRef: useRef3, useCallback } = Spicetify.React;
   var TOOLTIP_WIDTH = 320;
   var TOOLTIP_HEIGHT = 180;
   var OFFSET = 16;
@@ -4253,7 +4442,7 @@ var ListeningStatsApp = (() => {
         bottom: rect.bottom
       });
     }, [step.target, onNext, abortSignal]);
-    useEffect5(() => {
+    useEffect6(() => {
       const el = document.querySelector(step.target);
       if (!el) {
         if (!abortSignal.current.cancelled) {
@@ -4285,7 +4474,7 @@ var ListeningStatsApp = (() => {
         }
       };
     }, [step.target, updatePosition, onNext, abortSignal]);
-    useEffect5(() => {
+    useEffect6(() => {
       const handleReposition = () => {
         clearTimeout(debounceRef.current);
         debounceRef.current = window.setTimeout(updatePosition, REPOSITION_DEBOUNCE);
@@ -4303,7 +4492,7 @@ var ListeningStatsApp = (() => {
         window.removeEventListener("resize", handleReposition);
       };
     }, [updatePosition]);
-    useEffect5(() => {
+    useEffect6(() => {
       const handleKeyDown = (e) => {
         if (e.key === "Escape") {
           onEnd();
@@ -4412,7 +4601,8 @@ var ListeningStatsApp = (() => {
   }
 
   // src/app/components/Header.tsx
-  var { useState: useState7, useEffect: useEffect6, useRef: useRef4 } = Spicetify.React;
+  var { useState: useState7, useEffect: useEffect7, useRef: useRef4 } = Spicetify.React;
+  var { TooltipWrapper } = Spicetify.ReactComponent;
   var PROVIDER_NAMES2 = {
     local: "Local Tracking",
     lastfm: "Last.fm",
@@ -4422,7 +4612,7 @@ var ListeningStatsApp = (() => {
   function Announcement() {
     const [html, setHtml] = useState7(null);
     const fetched = useRef4(false);
-    useEffect6(() => {
+    useEffect7(() => {
       if (fetched.current) return;
       fetched.current = true;
       const url = ANNOUNCEMENT_URL + "?t=" + Math.floor(Date.now() / 3e5);
@@ -4449,7 +4639,32 @@ var ListeningStatsApp = (() => {
     onToggleSettings,
     providerType
   }) {
-    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", null, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics", providerType && /* @__PURE__ */ Spicetify.React.createElement("span", { className: "provider-badge" }, "via ", PROVIDER_NAMES2[providerType])), /* @__PURE__ */ Spicetify.React.createElement(Announcement, null)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "header-actions" }, onToggleSettings && /* @__PURE__ */ Spicetify.React.createElement(
+    const [trackingHealth, setTrackingHealth] = useState7(null);
+    useEffect7(() => {
+      if (providerType !== "local") {
+        setTrackingHealth(null);
+        return;
+      }
+      setTrackingHealth(getTrackingStatus());
+      const id = setInterval(() => {
+        setTrackingHealth(getTrackingStatus());
+      }, 5e3);
+      return () => clearInterval(id);
+    }, [providerType]);
+    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", null, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics", providerType && /* @__PURE__ */ Spicetify.React.createElement("span", { className: "provider-badge" }, "via ", PROVIDER_NAMES2[providerType], trackingHealth && /* @__PURE__ */ Spicetify.React.createElement(
+      TooltipWrapper,
+      {
+        label: trackingHealth.healthy ? "Tracking active" : `Tracking issue: ${trackingHealth.lastError || "unknown"}`,
+        placement: "top"
+      },
+      /* @__PURE__ */ Spicetify.React.createElement(
+        "span",
+        {
+          className: `status-dot ${trackingHealth.healthy ? "green" : "red"}`,
+          style: { display: "inline-block", marginLeft: 6, verticalAlign: "middle" }
+        }
+      )
+    ))), /* @__PURE__ */ Spicetify.React.createElement(Announcement, null)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "header-actions" }, onToggleSettings && /* @__PURE__ */ Spicetify.React.createElement(
       "button",
       {
         className: "header-btn",
@@ -5187,7 +5402,7 @@ var ListeningStatsApp = (() => {
 
   // src/app/components/ShareCardModal.tsx
   init_logger();
-  var { useState: useState8, useRef: useRef5, useEffect: useEffect7 } = Spicetify.React;
+  var { useState: useState8, useRef: useRef5, useEffect: useEffect8 } = Spicetify.React;
   function ShareCardModal({
     stats,
     period,
@@ -5198,7 +5413,7 @@ var ListeningStatsApp = (() => {
     const [generating, setGenerating] = useState8(false);
     const [previewUrl, setPreviewUrl] = useState8(null);
     const blobRef = useRef5(null);
-    useEffect7(() => {
+    useEffect8(() => {
       generatePreview();
     }, [format]);
     async function generatePreview() {
@@ -5299,7 +5514,7 @@ var ListeningStatsApp = (() => {
 
   // src/app/hooks/useSectionOrder.ts
   init_constants();
-  var { useState: useState9, useCallback: useCallback2, useEffect: useEffect8 } = Spicetify.React;
+  var { useState: useState9, useCallback: useCallback2, useEffect: useEffect9 } = Spicetify.React;
   var DEFAULT_ORDER = [
     "overview",
     "toplists",
@@ -5345,7 +5560,7 @@ var ListeningStatsApp = (() => {
         console.warn("[listening-stats] Section order access failed", e);
       }
     }, []);
-    useEffect8(() => {
+    useEffect9(() => {
       const handler = () => resetOrder();
       window.addEventListener(EVENTS.RESET_LAYOUT, handler);
       return () => {
@@ -8100,7 +8315,7 @@ var ListeningStatsApp = (() => {
 
   // src/app/index.tsx
   init_constants();
-  var { useRef: useRef7, useState: useState11, useCallback: useCallback4, useEffect: useEffect9 } = Spicetify.React;
+  var { useRef: useRef7, useState: useState11, useCallback: useCallback4, useEffect: useEffect10 } = Spicetify.React;
   var VERSION = getCurrentVersion();
   var _warnedKeys2 = /* @__PURE__ */ new Set();
   function warnOnce2(key, msg, err) {
@@ -8230,7 +8445,7 @@ var ListeningStatsApp = (() => {
   function DashboardSections(props) {
     const { order, reorder } = useSectionOrder();
     const { startTour } = useTour();
-    useEffect9(() => {
+    useEffect10(() => {
       const timer = setTimeout(() => {
         const tourType = shouldShowTour();
         if (tourType === "full") {
@@ -8240,7 +8455,7 @@ var ListeningStatsApp = (() => {
       }, 500);
       return () => clearTimeout(timer);
     }, []);
-    useEffect9(() => {
+    useEffect10(() => {
       const handler = () => {
         startTour(buildTourSteps(props.providerType));
       };

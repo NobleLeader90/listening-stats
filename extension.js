@@ -231,6 +231,23 @@
   }
 
   // src/services/logger.ts
+  var RING_SIZE = 100;
+  var _ring = [];
+  var _ringIdx = 0;
+  var _lastError = null;
+  function pushRing(level, msg) {
+    _ring[_ringIdx % RING_SIZE] = { level, msg, ts: Date.now() };
+    _ringIdx++;
+    if (level === "error") _lastError = msg;
+  }
+  function getLogs() {
+    if (_ring.length < RING_SIZE) return [..._ring];
+    const start = _ringIdx % RING_SIZE;
+    return [..._ring.slice(start), ..._ring.slice(0, start)];
+  }
+  function getLastError() {
+    return _lastError;
+  }
   function isLoggingEnabled() {
     try {
       return localStorage.getItem(LS_KEYS.LOGGING) === "1";
@@ -240,12 +257,15 @@
     }
   }
   function log(...args) {
+    pushRing("log", args.map(String).join(" "));
     if (isLoggingEnabled()) console.log("[ListeningStats]", ...args);
   }
   function warn(...args) {
+    pushRing("warn", args.map(String).join(" "));
     if (isLoggingEnabled()) console.warn("[ListeningStats]", ...args);
   }
   function error(...args) {
+    pushRing("error", args.map(String).join(" "));
     if (isLoggingEnabled()) console.error("[ListeningStats]", ...args);
   }
 
@@ -776,10 +796,81 @@
     resetDBPromise();
     log("IndexedDB data cleared");
   }
+  async function runTrackingTest() {
+    try {
+      const db = await getDB();
+      const testEvent = {
+        trackUri: "__ls_test__",
+        trackName: "__test__",
+        artistName: "__test__",
+        artistUri: "__test__",
+        albumName: "__test__",
+        albumUri: "__test__",
+        durationMs: 0,
+        playedMs: 0,
+        startedAt: Date.now(),
+        endedAt: Date.now(),
+        type: "play"
+      };
+      await db.add(STORE_NAME, testEvent);
+      const testEntries = await db.getAllFromIndex(
+        STORE_NAME,
+        "by-trackUri",
+        IDBKeyRange.only("__ls_test__")
+      );
+      if (testEntries.length > 0) {
+        const tx = db.transaction(STORE_NAME, "readwrite");
+        for (const e of testEntries) {
+          if (e.id) await tx.store.delete(e.id);
+        }
+        await tx.done;
+      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+  async function startupIntegrityCheck() {
+    try {
+      const db = await getDB();
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        return { ok: false, error: "Object store missing" };
+      }
+      const tx = db.transaction(STORE_NAME, "readonly");
+      const store = tx.store;
+      const requiredIndexes = ["by-startedAt", "by-trackUri", "by-artistUri", "by-type"];
+      for (const idx of requiredIndexes) {
+        if (!store.indexNames.contains(idx)) {
+          tx.abort();
+          return { ok: false, error: `Index missing: ${idx}` };
+        }
+      }
+      await tx.done.catch(() => {
+      });
+      return runTrackingTest();
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
 
   // src/services/tracker.ts
   var DEFAULT_THRESHOLD_MS = 1e4;
   var activeProviderType = null;
+  var _trackingStatus = {
+    healthy: true,
+    lastSuccessfulWriteAt: null,
+    lastSuccessfulTrackName: null,
+    lastError: null
+  };
+  var _trackingFailureNotified = false;
+  function getTrackingStatus() {
+    return { ..._trackingStatus };
+  }
+  function setTrackingHealthy(healthy, error2) {
+    _trackingStatus.healthy = healthy;
+    if (error2 !== void 0) _trackingStatus.lastError = error2;
+    else if (healthy) _trackingStatus.lastError = null;
+  }
   var _warnedKeys = /* @__PURE__ */ new Set();
   function warnOnce(key, msg, err) {
     if (_warnedKeys.has(key)) return;
@@ -981,6 +1072,11 @@
       if (written) {
         lastWrittenUri = previousTrackData.trackUri;
         lastWrittenAt = Date.now();
+        _trackingStatus.healthy = true;
+        _trackingStatus.lastSuccessfulWriteAt = Date.now();
+        _trackingStatus.lastSuccessfulTrackName = previousTrackData.trackName;
+        _trackingStatus.lastError = null;
+        _trackingFailureNotified = false;
         if (!skipped && isSkipRepeatsEnabled()) {
           lastRecordedUri = previousTrackData.trackUri;
         }
@@ -997,7 +1093,16 @@
         log("Dedup guard blocked duplicate event, polling data unchanged");
       }
     } catch (err) {
+      _trackingStatus.healthy = false;
+      _trackingStatus.lastError = err instanceof Error ? err.message : String(err);
       warn(" Failed to write play event:", err);
+      if (!_trackingFailureNotified) {
+        _trackingFailureNotified = true;
+        Spicetify?.showNotification?.(
+          "Tracking issue detected \u2014 try restarting Spotify",
+          true
+        );
+      }
     }
   }
   function handlePlayPause() {
@@ -1029,6 +1134,7 @@
   }
   var pollIntervalId = null;
   var activeSongChangeHandler = null;
+  var _visibilityHandler = null;
   function initPoller(providerType) {
     const win = window;
     if (win.__lsSongHandler) {
@@ -1083,6 +1189,33 @@
         win.__lsProgressHandler = progressHandler;
       }
     }, 3e5);
+    if (_visibilityHandler) {
+      document.removeEventListener("visibilitychange", _visibilityHandler);
+    }
+    _visibilityHandler = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!win.__lsSongHandler) {
+        warn("Visibility restored: songchange listener lost, re-registering");
+        activeSongChangeHandler = () => {
+          lastProgressMs = 0;
+          handleSongChange().catch((e) => {
+            warn("songchange handler error:", e);
+          });
+          captureCurrentTrackData();
+        };
+        progressHandler = handleProgress;
+        Spicetify.Player.addEventListener("songchange", activeSongChangeHandler);
+        Spicetify.Player.addEventListener("onplaypause", handlePlayPause);
+        Spicetify.Player.addEventListener("onprogress", progressHandler);
+        win.__lsSongHandler = activeSongChangeHandler;
+        win.__lsPauseHandler = handlePlayPause;
+        win.__lsProgressHandler = progressHandler;
+      }
+      getDB().catch(() => {
+        warn("Visibility restored: DB ping failed, connection will reconnect on next write");
+      });
+    };
+    document.addEventListener("visibilitychange", _visibilityHandler);
   }
   function destroyPoller() {
     if (activeSongChangeHandler) {
@@ -1102,12 +1235,23 @@
     lastWrittenUri = null;
     lastRecordedUri = null;
     lastWrittenAt = 0;
+    if (_visibilityHandler) {
+      document.removeEventListener("visibilitychange", _visibilityHandler);
+      _visibilityHandler = null;
+    }
     if (pollIntervalId !== null) {
       clearInterval(pollIntervalId);
       pollIntervalId = null;
     }
     activeProviderType = null;
     previousTrackData = null;
+    _trackingStatus = {
+      healthy: true,
+      lastSuccessfulWriteAt: null,
+      lastSuccessfulTrackName: null,
+      lastError: null
+    };
+    _trackingFailureNotified = false;
   }
 
   // src/utils/streak.ts
@@ -1682,6 +1826,16 @@
       init() {
         resetDBPromise();
         initPoller("local");
+        startupIntegrityCheck().then((result) => {
+          if (!result.ok) {
+            setTrackingHealthy(false, result.error);
+            console.warn("[listening-stats] Startup integrity check failed:", result.error);
+            Spicetify?.showNotification?.(
+              "Tracking database issue detected \u2014 try restarting Spotify",
+              true
+            );
+          }
+        });
       },
       destroy() {
         destroyPoller();
@@ -2288,6 +2442,14 @@
     resetLastfmKey: () => {
       clearConfig();
       log("Last.fm API key cleared. Reload the app to reconfigure.");
+    },
+    getTrackingStatus,
+    getLastError,
+    getLogs,
+    testWrite: async () => {
+      const result = await runTrackingTest();
+      console.log("[ListeningStats] testWrite result:", result);
+      return result;
     }
   };
   async function main() {
@@ -2300,9 +2462,14 @@
       activateProvider(providerType);
     }
   }
-  (function init() {
+  (function init(retries = 0) {
     if (!Spicetify.Player || !Spicetify.Platform || !Spicetify.CosmosAsync) {
-      setTimeout(init, 100);
+      if (retries >= 50) {
+        console.error("[listening-stats] Spicetify not ready after 5s, giving up");
+        Spicetify?.showNotification?.("Listening Stats failed to initialize \u2014 try restarting Spotify", true);
+        return;
+      }
+      setTimeout(() => init(retries + 1), 100);
       return;
     }
     main();
