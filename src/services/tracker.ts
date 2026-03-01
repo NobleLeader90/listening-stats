@@ -418,16 +418,9 @@ let _visibilityHandler: (() => void) | null = null;
 export function initPoller(providerType: ProviderType): void {
   const win = window as any;
 
-  // Remove any existing handler from another bundle (app.tsx vs index.tsx)
-  if (win.__lsSongHandler) {
-    Spicetify.Player.removeEventListener("songchange", win.__lsSongHandler);
-  }
-  if (win.__lsPauseHandler) {
-    Spicetify.Player.removeEventListener("onplaypause", win.__lsPauseHandler);
-  }
-  if (win.__lsProgressHandler) {
-    Spicetify.Player.removeEventListener("onprogress", win.__lsProgressHandler);
-  }
+  // Only initialize once — local tracking is permanent, never re-registered or destroyed
+  if (win.__lsPollerInitialized) return;
+  win.__lsPollerInitialized = true;
 
   activeProviderType = providerType;
 
@@ -519,41 +512,6 @@ export function initPoller(providerType: ProviderType): void {
 }
 
 export function destroyPoller(): void {
-  if (activeSongChangeHandler) {
-    Spicetify.Player.removeEventListener("songchange", activeSongChangeHandler);
-    activeSongChangeHandler = null;
-  }
-  Spicetify.Player.removeEventListener("onplaypause", handlePlayPause);
-  if (progressHandler) {
-    Spicetify.Player.removeEventListener("onprogress", progressHandler);
-    progressHandler = null;
-  }
-
-  const win = window as any;
-  win.__lsSongHandler = null;
-  win.__lsPauseHandler = null;
-  win.__lsProgressHandler = null;
-  lastProgressMs = 0;
-  lastWrittenUri = null;
-  lastRecordedUri = null;
-  lastWrittenAt = 0;
-
-  if (_visibilityHandler) {
-    document.removeEventListener("visibilitychange", _visibilityHandler);
-    _visibilityHandler = null;
-  }
-
-  if (pollIntervalId !== null) {
-    clearInterval(pollIntervalId);
-    pollIntervalId = null;
-  }
-  activeProviderType = null;
-  previousTrackData = null;
-  _trackingStatus = {
-    healthy: true,
-    lastSuccessfulWriteAt: null,
-    lastSuccessfulTrackName: null,
-    lastError: null,
-  };
-  _trackingFailureNotified = false;
+  // No-op: local tracking is permanent and never destroyed.
+  // Managed exclusively by extension.js — survives all provider switches.
 }

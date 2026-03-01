@@ -6,8 +6,9 @@ import {
 } from "./services/providers";
 import { clearConfig as clearLastfmConfig } from "./services/lastfm";
 import { getLogs, getLastError, log } from "./services/logger";
-import { getTrackingStatus } from "./services/tracker";
-import { runTrackingTest } from "./services/storage";
+import { getTrackingStatus, initPoller } from "./services/tracker";
+import { runTrackingTest, startupIntegrityCheck } from "./services/storage";
+import { setTrackingHealthy } from "./services/tracker";
 
 
 (window as any).ListeningStats = {
@@ -26,6 +27,19 @@ import { runTrackingTest } from "./services/storage";
 };
 
 async function main(): Promise<void> {
+  // Always start local tracking from the extension — it persists across provider switches
+  initPoller("local");
+  startupIntegrityCheck().then((result) => {
+    if (!result.ok) {
+      setTrackingHealthy(false, result.error);
+      console.warn("[listening-stats] Startup integrity check failed:", result.error);
+      Spicetify?.showNotification?.(
+        "Tracking database issue detected \u2014 try restarting Spotify",
+        true,
+      );
+    }
+  });
+
   let providerType = getSelectedProviderType();
 
   if (!providerType && hasExistingData()) {
