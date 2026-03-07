@@ -1,4 +1,28 @@
 (() => {
+  // src/utils/dateKey.ts
+  function toLocalDateKey(tsOrDate) {
+    const d = typeof tsOrDate === "number" ? new Date(tsOrDate) : tsOrDate;
+    return d.toLocaleDateString("en-CA");
+  }
+
+  // src/utils/streak.ts
+  function calculateStreak(activityDates) {
+    const dateSet = new Set(activityDates);
+    const today = /* @__PURE__ */ new Date();
+    let streak = 0;
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const key = toLocalDateKey(d);
+      if (dateSet.has(key)) {
+        streak++;
+      } else if (i > 0) {
+        break;
+      }
+    }
+    return streak;
+  }
+
   // src/constants.ts
   var LS_KEYS = {
     /** Prefix used for dynamic key construction (e.g. rateLimitedUntil) */
@@ -198,13 +222,14 @@
     });
     return { albums, total };
   }
-  async function getRecentTracks(limit = 50) {
+  async function getRecentTracks(limit = 50, page = 1) {
     const config = getConfig();
     if (!config) return [];
     const data = await lastfmFetch({
       method: "user.getrecenttracks",
       user: config.username,
-      limit: String(limit)
+      limit: String(limit),
+      page: String(page)
     });
     const tracks = data.recenttracks?.track || [];
     return tracks.filter((t) => t.date || t["@attr"]?.nowplaying).map((t) => {
@@ -1213,24 +1238,6 @@
   function destroyPoller() {
   }
 
-  // src/utils/streak.ts
-  function calculateStreak(activityDates) {
-    const dateSet = new Set(activityDates);
-    const today = /* @__PURE__ */ new Date();
-    let streak = 0;
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const key = d.toISOString().split("T")[0];
-      if (dateSet.has(key)) {
-        streak++;
-      } else if (i > 0) {
-        break;
-      }
-    }
-    return streak;
-  }
-
   // src/services/providers/lastfm.ts
   var PERIODS = [
     "recent",
@@ -1267,6 +1274,26 @@
           return calculateRecentStats();
         }
         return calculateRankedStats(period);
+      },
+      async calculateDateMetrics(_period) {
+        const allDates = /* @__PURE__ */ new Set();
+        for (let page = 1; page <= 20; page++) {
+          const tracks = await getRecentTracks(200, page);
+          const realTracks = tracks.filter((t) => !t.nowPlaying);
+          if (realTracks.length === 0) break;
+          for (const t of realTracks) {
+            allDates.add(toLocalDateKey(new Date(t.playedAt)));
+          }
+          const streak = calculateStreak([...allDates]);
+          const oldestTrack = realTracks[realTracks.length - 1];
+          const daysBack = Math.floor(
+            (Date.now() - new Date(oldestTrack.playedAt).getTime()) / 864e5
+          );
+          if (streak < daysBack) {
+            return { streakDays: streak };
+          }
+        }
+        return { streakDays: calculateStreak([...allDates]) };
       }
     };
   }
@@ -1375,11 +1402,6 @@
         estimatedTimeMs += AVG_TRACK_MS;
       }
     }
-    const activityDates = [
-      ...new Set(
-        recentTracks.map((t) => new Date(t.playedAt).toISOString().split("T")[0])
-      )
-    ];
     return {
       totalTimeMs: estimatedTimeMs,
       trackCount: recentTracks.length,
@@ -1394,10 +1416,10 @@
       recentTracks,
       genres: {},
       topGenres: [],
-      streakDays: calculateStreak(activityDates),
+      streakDays: null,
       newArtistsCount: 0,
       skipRate: pollingData.totalPlays > 0 ? pollingData.skipEvents / pollingData.totalPlays : 0,
-      listenedDays: activityDates.length,
+      listenedDays: null,
       lastfmConnected: true,
       totalScrobbles: userInfo?.totalScrobbles
     };
@@ -1466,11 +1488,6 @@
       (sum, t) => sum + (t.durationSecs || 210) * 1e3 * t.playCount,
       0
     );
-    const activityDates = [
-      ...new Set(
-        recentTracks.map((t) => new Date(t.playedAt).toISOString().split("T")[0])
-      )
-    ];
     return {
       totalTimeMs,
       trackCount: totalPlays,
@@ -1485,10 +1502,10 @@
       recentTracks,
       genres: {},
       topGenres: [],
-      streakDays: calculateStreak(activityDates),
+      streakDays: null,
       newArtistsCount: 0,
       skipRate: pollingData.totalPlays > 0 ? pollingData.skipEvents / pollingData.totalPlays : 0,
-      listenedDays: activityDates.length,
+      listenedDays: null,
       lastfmConnected: true,
       totalScrobbles: userInfo?.totalScrobbles
     };
@@ -1790,8 +1807,14 @@
       },
       async calculateStats(period) {
         const events = await getEventsForPeriod(period);
-        const allEvents = period === "all_time" ? events : await getAllPlayEvents();
-        return aggregateEvents(events, allEvents);
+        return aggregateEvents(events);
+      },
+      async calculateDateMetrics(_period) {
+        const allEvents = await getAllPlayEvents();
+        const allDates = Array.from(
+          new Set(allEvents.map((e) => toLocalDateKey(e.startedAt)))
+        );
+        return { streakDays: calculateStreak(allDates) };
       },
       clearData() {
         clearAllData();
@@ -1831,7 +1854,7 @@
     const { start, end } = getTimeRange(period);
     return getPlayEventsByTimeRange(start, end);
   }
-  async function aggregateEvents(events, allEvents) {
+  async function aggregateEvents(events) {
     const completedEvents = events.filter((e) => e.type !== "skip");
     const trackMap = /* @__PURE__ */ new Map();
     for (const e of completedEvents) {
@@ -1984,14 +2007,6 @@
     const uniqueArtistUris = new Set(
       completedEvents.map((e) => e.artistUri).filter(Boolean)
     );
-    const periodDates = new Set(
-      events.map((e) => new Date(e.startedAt).toISOString().split("T")[0])
-    );
-    const allDates = Array.from(
-      new Set(
-        allEvents.map((e) => new Date(e.startedAt).toISOString().split("T")[0])
-      )
-    );
     const totalTimeMs = events.reduce((sum, e) => sum + e.playedMs, 0);
     const skipEvents = events.length - completedEvents.length;
     return {
@@ -2007,10 +2022,10 @@
       recentTracks,
       genres,
       topGenres,
-      streakDays: calculateStreak(allDates),
+      streakDays: null,
       newArtistsCount: 0,
       skipRate: events.length > 0 ? skipEvents / events.length : 0,
-      listenedDays: periodDates.size,
+      listenedDays: null,
       lastfmConnected: false
     };
   }
@@ -2121,6 +2136,17 @@
     );
     return data.items || [];
   }
+  async function getStreams(options) {
+    const params = new URLSearchParams();
+    if (options.before) params.set("before", String(options.before));
+    if (options.after) params.set("after", String(options.after));
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.order) params.set("order", options.order);
+    const data = await statsfmFetch(
+      `/users/${getUsername()}/streams?${params.toString()}`
+    );
+    return data.items || [];
+  }
   async function getStreamStats(range) {
     const data = await statsfmFetch(
       `/users/${getUsername()}/streams/stats?range=${range}`
@@ -2196,6 +2222,36 @@
       },
       async calculateStats(period) {
         return calculateStatsfmStats(period);
+      },
+      async calculateDateMetrics(_period) {
+        if (isPlus) {
+          const allDates = /* @__PURE__ */ new Set();
+          let before;
+          for (let page = 0; page < 20; page++) {
+            const streams = await getStreams({
+              limit: 200,
+              order: "desc",
+              ...before ? { before } : {}
+            });
+            if (streams.length === 0) break;
+            for (const s of streams) {
+              allDates.add(toLocalDateKey(new Date(s.endTime)));
+            }
+            const streak = calculateStreak([...allDates]);
+            const oldestDate = new Date(streams[streams.length - 1].endTime);
+            const daysBack = Math.floor(
+              (Date.now() - oldestDate.getTime()) / 864e5
+            );
+            if (streak < daysBack) {
+              return { streakDays: streak };
+            }
+            before = new Date(streams[streams.length - 1].endTime).getTime();
+          }
+          return { streakDays: calculateStreak([...allDates]) };
+        }
+        const recent = await getRecentStreams(50).catch(() => []);
+        const dates = recent.map((s) => toLocalDateKey(new Date(s.endTime)));
+        return { streakDays: calculateStreak(dates) };
       }
     };
   }
@@ -2316,11 +2372,6 @@
       (sum, t) => sum + (t.playedMs || (t.streams ? t.track.durationMs * t.streams : 0)),
       0
     );
-    const activityDates = [
-      ...new Set(
-        recentTracks.map((t) => new Date(t.playedAt).toISOString().split("T")[0])
-      )
-    ];
     return {
       totalTimeMs: streamStats.durationMs || totalTimeMs,
       trackCount: streamStats.count || totalPlays,
@@ -2335,10 +2386,10 @@
       recentTracks,
       genres,
       topGenres,
-      streakDays: calculateStreak(activityDates),
+      streakDays: null,
       newArtistsCount: 0,
       skipRate: pollingData.totalPlays > 0 ? pollingData.skipEvents / pollingData.totalPlays : 0,
-      listenedDays: activityDates.length,
+      listenedDays: null,
       lastfmConnected: false
     };
   }

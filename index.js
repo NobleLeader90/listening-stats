@@ -876,6 +876,30 @@ var ListeningStatsApp = (() => {
     return () => window.removeEventListener(EVENTS.PREFS_CHANGED, handler);
   }
 
+  // src/utils/dateKey.ts
+  function toLocalDateKey(tsOrDate) {
+    const d = typeof tsOrDate === "number" ? new Date(tsOrDate) : tsOrDate;
+    return d.toLocaleDateString("en-CA");
+  }
+
+  // src/utils/streak.ts
+  function calculateStreak(activityDates) {
+    const dateSet = new Set(activityDates);
+    const today = /* @__PURE__ */ new Date();
+    let streak = 0;
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const key = toLocalDateKey(d);
+      if (dateSet.has(key)) {
+        streak++;
+      } else if (i > 0) {
+        break;
+      }
+    }
+    return streak;
+  }
+
   // src/services/lastfm.ts
   init_constants();
   var LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/";
@@ -1047,13 +1071,14 @@ var ListeningStatsApp = (() => {
     });
     return { albums, total };
   }
-  async function getRecentTracks(limit = 50) {
+  async function getRecentTracks(limit = 50, page = 1) {
     const config = getConfig();
     if (!config) return [];
     const data = await lastfmFetch({
       method: "user.getrecenttracks",
       user: config.username,
-      limit: String(limit)
+      limit: String(limit),
+      page: String(page)
     });
     const tracks = data.recenttracks?.track || [];
     return tracks.filter((t) => t.date || t["@attr"]?.nowplaying).map((t) => {
@@ -1473,24 +1498,6 @@ var ListeningStatsApp = (() => {
   function destroyPoller() {
   }
 
-  // src/utils/streak.ts
-  function calculateStreak(activityDates) {
-    const dateSet = new Set(activityDates);
-    const today = /* @__PURE__ */ new Date();
-    let streak = 0;
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const key = d.toISOString().split("T")[0];
-      if (dateSet.has(key)) {
-        streak++;
-      } else if (i > 0) {
-        break;
-      }
-    }
-    return streak;
-  }
-
   // src/services/providers/lastfm.ts
   var PERIODS = [
     "recent",
@@ -1527,6 +1534,26 @@ var ListeningStatsApp = (() => {
           return calculateRecentStats();
         }
         return calculateRankedStats(period);
+      },
+      async calculateDateMetrics(_period) {
+        const allDates = /* @__PURE__ */ new Set();
+        for (let page = 1; page <= 20; page++) {
+          const tracks = await getRecentTracks(200, page);
+          const realTracks = tracks.filter((t) => !t.nowPlaying);
+          if (realTracks.length === 0) break;
+          for (const t of realTracks) {
+            allDates.add(toLocalDateKey(new Date(t.playedAt)));
+          }
+          const streak = calculateStreak([...allDates]);
+          const oldestTrack = realTracks[realTracks.length - 1];
+          const daysBack = Math.floor(
+            (Date.now() - new Date(oldestTrack.playedAt).getTime()) / 864e5
+          );
+          if (streak < daysBack) {
+            return { streakDays: streak };
+          }
+        }
+        return { streakDays: calculateStreak([...allDates]) };
       }
     };
   }
@@ -1635,11 +1662,6 @@ var ListeningStatsApp = (() => {
         estimatedTimeMs += AVG_TRACK_MS;
       }
     }
-    const activityDates = [
-      ...new Set(
-        recentTracks.map((t) => new Date(t.playedAt).toISOString().split("T")[0])
-      )
-    ];
     return {
       totalTimeMs: estimatedTimeMs,
       trackCount: recentTracks.length,
@@ -1654,10 +1676,10 @@ var ListeningStatsApp = (() => {
       recentTracks,
       genres: {},
       topGenres: [],
-      streakDays: calculateStreak(activityDates),
+      streakDays: null,
       newArtistsCount: 0,
       skipRate: pollingData.totalPlays > 0 ? pollingData.skipEvents / pollingData.totalPlays : 0,
-      listenedDays: activityDates.length,
+      listenedDays: null,
       lastfmConnected: true,
       totalScrobbles: userInfo?.totalScrobbles
     };
@@ -1726,11 +1748,6 @@ var ListeningStatsApp = (() => {
       (sum, t) => sum + (t.durationSecs || 210) * 1e3 * t.playCount,
       0
     );
-    const activityDates = [
-      ...new Set(
-        recentTracks.map((t) => new Date(t.playedAt).toISOString().split("T")[0])
-      )
-    ];
     return {
       totalTimeMs,
       trackCount: totalPlays,
@@ -1745,10 +1762,10 @@ var ListeningStatsApp = (() => {
       recentTracks,
       genres: {},
       topGenres: [],
-      streakDays: calculateStreak(activityDates),
+      streakDays: null,
       newArtistsCount: 0,
       skipRate: pollingData.totalPlays > 0 ? pollingData.skipEvents / pollingData.totalPlays : 0,
-      listenedDays: activityDates.length,
+      listenedDays: null,
       lastfmConnected: true,
       totalScrobbles: userInfo?.totalScrobbles
     };
@@ -1969,8 +1986,14 @@ var ListeningStatsApp = (() => {
       },
       async calculateStats(period) {
         const events = await getEventsForPeriod(period);
-        const allEvents = period === "all_time" ? events : await getAllPlayEvents();
-        return aggregateEvents(events, allEvents);
+        return aggregateEvents(events);
+      },
+      async calculateDateMetrics(_period) {
+        const allEvents = await getAllPlayEvents();
+        const allDates = Array.from(
+          new Set(allEvents.map((e) => toLocalDateKey(e.startedAt)))
+        );
+        return { streakDays: calculateStreak(allDates) };
       },
       clearData() {
         clearAllData();
@@ -2010,7 +2033,7 @@ var ListeningStatsApp = (() => {
     const { start, end } = getTimeRange(period);
     return getPlayEventsByTimeRange(start, end);
   }
-  async function aggregateEvents(events, allEvents) {
+  async function aggregateEvents(events) {
     const completedEvents = events.filter((e) => e.type !== "skip");
     const trackMap = /* @__PURE__ */ new Map();
     for (const e of completedEvents) {
@@ -2163,14 +2186,6 @@ var ListeningStatsApp = (() => {
     const uniqueArtistUris = new Set(
       completedEvents.map((e) => e.artistUri).filter(Boolean)
     );
-    const periodDates = new Set(
-      events.map((e) => new Date(e.startedAt).toISOString().split("T")[0])
-    );
-    const allDates = Array.from(
-      new Set(
-        allEvents.map((e) => new Date(e.startedAt).toISOString().split("T")[0])
-      )
-    );
     const totalTimeMs = events.reduce((sum, e) => sum + e.playedMs, 0);
     const skipEvents = events.length - completedEvents.length;
     return {
@@ -2186,10 +2201,10 @@ var ListeningStatsApp = (() => {
       recentTracks,
       genres,
       topGenres,
-      streakDays: calculateStreak(allDates),
+      streakDays: null,
       newArtistsCount: 0,
       skipRate: events.length > 0 ? skipEvents / events.length : 0,
-      listenedDays: periodDates.size,
+      listenedDays: null,
       lastfmConnected: false
     };
   }
@@ -2312,6 +2327,17 @@ var ListeningStatsApp = (() => {
     );
     return data.items || [];
   }
+  async function getStreams(options) {
+    const params = new URLSearchParams();
+    if (options.before) params.set("before", String(options.before));
+    if (options.after) params.set("after", String(options.after));
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.order) params.set("order", options.order);
+    const data = await statsfmFetch(
+      `/users/${getUsername()}/streams?${params.toString()}`
+    );
+    return data.items || [];
+  }
   async function getStreamStats(range) {
     const data = await statsfmFetch(
       `/users/${getUsername()}/streams/stats?range=${range}`
@@ -2387,6 +2413,36 @@ var ListeningStatsApp = (() => {
       },
       async calculateStats(period) {
         return calculateStatsfmStats(period);
+      },
+      async calculateDateMetrics(_period) {
+        if (isPlus) {
+          const allDates = /* @__PURE__ */ new Set();
+          let before;
+          for (let page = 0; page < 20; page++) {
+            const streams = await getStreams({
+              limit: 200,
+              order: "desc",
+              ...before ? { before } : {}
+            });
+            if (streams.length === 0) break;
+            for (const s of streams) {
+              allDates.add(toLocalDateKey(new Date(s.endTime)));
+            }
+            const streak = calculateStreak([...allDates]);
+            const oldestDate = new Date(streams[streams.length - 1].endTime);
+            const daysBack = Math.floor(
+              (Date.now() - oldestDate.getTime()) / 864e5
+            );
+            if (streak < daysBack) {
+              return { streakDays: streak };
+            }
+            before = new Date(streams[streams.length - 1].endTime).getTime();
+          }
+          return { streakDays: calculateStreak([...allDates]) };
+        }
+        const recent = await getRecentStreams(50).catch(() => []);
+        const dates = recent.map((s) => toLocalDateKey(new Date(s.endTime)));
+        return { streakDays: calculateStreak(dates) };
       }
     };
   }
@@ -2507,11 +2563,6 @@ var ListeningStatsApp = (() => {
       (sum, t) => sum + (t.playedMs || (t.streams ? t.track.durationMs * t.streams : 0)),
       0
     );
-    const activityDates = [
-      ...new Set(
-        recentTracks.map((t) => new Date(t.playedAt).toISOString().split("T")[0])
-      )
-    ];
     return {
       totalTimeMs: streamStats.durationMs || totalTimeMs,
       trackCount: streamStats.count || totalPlays,
@@ -2526,10 +2577,10 @@ var ListeningStatsApp = (() => {
       recentTracks,
       genres,
       topGenres,
-      streakDays: calculateStreak(activityDates),
+      streakDays: null,
       newArtistsCount: 0,
       skipRate: pollingData.totalPlays > 0 ? pollingData.skipEvents / pollingData.totalPlays : 0,
-      listenedDays: activityDates.length,
+      listenedDays: null,
       lastfmConnected: false
     };
   }
@@ -2642,7 +2693,7 @@ var ListeningStatsApp = (() => {
   var INSTALL_CMD_WINDOWS = `irm https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.ps1 | iex`;
   function getCurrentVersion() {
     try {
-      return "1.3.71";
+      return "1.3.96";
     } catch {
       return "0.0.0";
     }
@@ -2886,7 +2937,7 @@ var ListeningStatsApp = (() => {
       trackCount: stats.trackCount,
       uniqueTrackCount: stats.uniqueTrackCount,
       uniqueArtistCount: stats.uniqueArtistCount,
-      streakDays: stats.streakDays,
+      streakDays: stats.streakDays ?? 0,
       skipRate: Math.round(stats.skipRate * 100),
       topTracks: stats.topTracks.map((t) => ({
         rank: t.rank,
@@ -3751,6 +3802,35 @@ var ListeningStatsApp = (() => {
   }
 
   // src/app/components/OverviewCards.tsx
+  function getDaysInPeriod(period) {
+    const now = /* @__PURE__ */ new Date();
+    switch (period) {
+      case "today":
+        return 1;
+      case "this_week":
+        return now.getDay() + 1;
+      case "this_month":
+        return now.getDate();
+      case "7day":
+        return 7;
+      case "1month":
+        return 30;
+      case "3month":
+        return 91;
+      case "6month":
+        return 182;
+      case "12month":
+        return 365;
+      case "weeks":
+        return 28;
+      case "months":
+        return 182;
+      case "recent":
+        return 3;
+      default:
+        return 365;
+    }
+  }
   function OverviewCards({
     stats,
     period,
@@ -3760,6 +3840,8 @@ var ListeningStatsApp = (() => {
   }) {
     const { TooltipWrapper: TooltipWrapper2 } = Spicetify.ReactComponent;
     const payout = estimateArtistPayout(stats.trackCount);
+    const daysInPeriod = getDaysInPeriod(period);
+    const avgPlaysPerDay = stats.trackCount > 0 ? Math.round(stats.trackCount / daysInPeriod) : 0;
     return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.totalTimeMs, format: formatDurationLong })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Time Listened"), /* @__PURE__ */ Spicetify.React.createElement(
       PeriodTabs,
       {
@@ -3768,7 +3850,7 @@ var ListeningStatsApp = (() => {
         periodLabels,
         onPeriodChange
       }
-    ), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Total number of tracks played (including repeats)", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.trackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks"))), /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Number of different artists you've listened to", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueArtistCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists"))), /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Number of different tracks you've listened to", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueTrackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique"))), stats.lastfmConnected && stats.totalScrobbles ? /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Total plays recorded by Last.fm", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, formatNumber(stats.totalScrobbles)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Scrobbles"))) : null)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Estimated amount Spotify paid artists from your streams ($0.004/stream)", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Spotify paid artists"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Consecutive days with at least one play", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, formatNumber(stats.streakDays)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: stats.newArtistsCount > 0 ? "Artists you listened to for the first time in this period" : "Number of days with at least one play in this period", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, stats.newArtistsCount > 0 ? /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(stats.newArtistsCount)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists")) : /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(stats.listenedDays)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Days Listened")))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Percentage of tracks skipped before the play threshold", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value red" }, Math.floor(stats.skipRate * 100), "%"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Skip Rate")))))));
+    ), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Total number of tracks played (including repeats)", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.trackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks"))), /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Number of different artists you've listened to", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueArtistCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists"))), /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Number of different tracks you've listened to", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, /* @__PURE__ */ Spicetify.React.createElement(AnimatedNumber, { value: stats.uniqueTrackCount, format: formatNumber })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique"))), stats.lastfmConnected && stats.totalScrobbles ? /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Total plays recorded by Last.fm", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, formatNumber(stats.totalScrobbles)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Scrobbles"))) : null)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Estimated amount Spotify paid artists from your streams ($0.004/stream)", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Spotify paid artists"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Consecutive days with at least one play", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, stats.streakDays === null ? /* @__PURE__ */ Spicetify.React.createElement("span", { className: "skeleton-stat-value" }) : formatNumber(stats.streakDays)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak"))))), stats.newArtistsCount > 0 ? /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Artists you listened to for the first time in this period", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(stats.newArtistsCount)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists"))))) : /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Average number of tracks played per day in this period", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, formatNumber(avgPlaysPerDay)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Plays/Day"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement(TooltipWrapper2, { label: "Percentage of tracks skipped before the play threshold", placement: "top" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value red" }, Math.floor(stats.skipRate * 100), "%"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Skip Rate")))))));
   }
 
   // src/app/components/ImageWithRetry.tsx
@@ -4973,7 +5055,7 @@ var ListeningStatsApp = (() => {
     drawStatCard(ctx, pad + (cardW + gridGap) * 2, y, cardW, cardH, `${stats.uniqueTrackCount}`, "UNIQUE", accent);
     const row2Y = y + cardH + gridGap;
     drawStatCard(ctx, pad, row2Y, cardW, cardH, `${stats.uniqueArtistCount}`, "ARTISTS", accent);
-    drawStatCard(ctx, pad + cardW + gridGap, row2Y, cardW, cardH, stats.streakDays > 0 ? `${stats.streakDays}d` : "-", "STREAK", accent, stats.streakDays > 0);
+    drawStatCard(ctx, pad + cardW + gridGap, row2Y, cardW, cardH, (stats.streakDays ?? 0) > 0 ? `${stats.streakDays}d` : "-", "STREAK", accent, (stats.streakDays ?? 0) > 0);
     drawStatCard(ctx, pad + (cardW + gridGap) * 2, row2Y, cardW, cardH, `${Math.round(stats.skipRate * 100)}%`, "SKIP RATE", accent);
     y = row2Y + cardH + 32;
     const listArtSize = 56;
@@ -5179,7 +5261,7 @@ var ListeningStatsApp = (() => {
     drawStatCard(ctx, pad + (statCardW + 6) * 2, statY, statCardW, statCardH, `${stats.uniqueArtistCount}`, "ARTISTS", accent);
     const stat2Y = statY + statCardH + 8;
     drawStatCard(ctx, pad, stat2Y, statCardW, statCardH, `${stats.uniqueTrackCount}`, "UNIQUE", accent);
-    drawStatCard(ctx, pad + statCardW + 6, stat2Y, statCardW, statCardH, stats.streakDays > 0 ? `${stats.streakDays}d` : "-", "STREAK", accent, stats.streakDays > 0);
+    drawStatCard(ctx, pad + statCardW + 6, stat2Y, statCardW, statCardH, (stats.streakDays ?? 0) > 0 ? `${stats.streakDays}d` : "-", "STREAK", accent, (stats.streakDays ?? 0) > 0);
     drawStatCard(ctx, pad + (statCardW + 6) * 2, stat2Y, statCardW, statCardH, `${Math.round(stats.skipRate * 100)}%`, "SKIP RATE", accent);
     if (stats.topGenres.length > 0) {
       drawGenrePills(ctx, stats.topGenres, pad, stat2Y + statCardH + 16, leftW, accent);
@@ -5588,9 +5670,9 @@ var ListeningStatsApp = (() => {
 .settings-overlay,
 .share-modal-overlay,
 .update-banner-container {
-  --ls-accent: #1db954;
-  --ls-accent-hover: #1ed760;
-  --ls-accent-rgb: 29, 185, 84;
+  --ls-accent: var(--spice-button, #1db954);
+  --ls-accent-hover: var(--spice-button-active, #1ed760);
+  --ls-accent-rgb: var(--spice-rgb-button, 29, 185, 84);
 }
 
 /* ===== Sidebar Icon ===== */
@@ -5701,7 +5783,7 @@ var ListeningStatsApp = (() => {
 /* ===== Period Tabs (inside hero card) ===== */
 .period-tabs {
   display: inline-flex;
-  background: rgba(0, 0, 0, 0.15);
+  background: rgba(var(--spice-rgb-main, 0,0,0), 0.15);
   border-radius: 8px;
   padding: 4px;
   margin-top: 16px;
@@ -5719,7 +5801,7 @@ var ListeningStatsApp = (() => {
   padding: 8px 16px;
   border: none;
   background: transparent;
-  color: rgba(0, 0, 0, 0.6);
+  color: rgba(var(--spice-rgb-main, 0,0,0), 0.6);
   font-size: 13px;
   font-weight: 600;
   border-radius: 6px;
@@ -5730,13 +5812,13 @@ var ListeningStatsApp = (() => {
 }
 
 .period-tab:hover {
-  color: rgba(0, 0, 0, 0.8);
-  background: rgba(0, 0, 0, 0.1);
+  color: rgba(var(--spice-rgb-main, 0,0,0), 0.8);
+  background: rgba(var(--spice-rgb-main, 0,0,0), 0.1);
 }
 
 .period-tab.active {
-  background: rgba(0, 0, 0, 0.2);
-  color: #000;
+  background: rgba(var(--spice-rgb-main, 0,0,0), 0.2);
+  color: var(--spice-main, #000);
 }
 
 /* ===== Overview Cards Row ===== */
@@ -5765,8 +5847,8 @@ var ListeningStatsApp = (() => {
 }
 
 .overview-card.hero {
-  background: linear-gradient(135deg, var(--spice-text) 0%, #1db954 100%);
-  color: #000;
+  background: linear-gradient(135deg, var(--spice-text) 0%, var(--ls-accent) 100%);
+  color: var(--spice-main, #000);
 }
 
 .overview-card.hero .overview-value {
@@ -5809,7 +5891,7 @@ var ListeningStatsApp = (() => {
   gap: 24px;
   margin-top: auto;
   padding-top: 16px;
-  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  border-top: 1px solid rgba(var(--spice-rgb-main, 0,0,0), 0.1);
   overflow: visible;
 }
 
@@ -5843,7 +5925,7 @@ var ListeningStatsApp = (() => {
 }
 
 .stat-text .overview-value.green {
-  color: #1db954;
+  color: var(--ls-accent);
 }
 .stat-text .overview-value.orange {
   color: #f39c12;
@@ -5917,7 +5999,7 @@ var ListeningStatsApp = (() => {
 }
 
 .item-row:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--spice-rgb-text), 0.07);
 }
 
 .item-rank {
@@ -6017,7 +6099,7 @@ var ListeningStatsApp = (() => {
 
 .heart-btn:hover {
   color: var(--text-base);
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--spice-rgb-text), 0.1);
 }
 
 .heart-btn.disabled:hover {
@@ -6073,7 +6155,7 @@ var ListeningStatsApp = (() => {
 
 .activity-bar {
   flex: 1;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--spice-rgb-text), 0.08);
   border-radius: 3px 3px 0 0;
   min-height: 4px;
   transition: background 0.15s ease;
@@ -6210,7 +6292,7 @@ var ListeningStatsApp = (() => {
 
 .lastfm-banner.prompt {
   background: var(--background-tinted-base);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(var(--spice-rgb-text), 0.06);
 }
 
 .lastfm-banner.form {
@@ -6316,7 +6398,7 @@ var ListeningStatsApp = (() => {
 
 .lastfm-close-btn:hover {
   color: var(--text-base);
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--spice-rgb-text), 0.1);
 }
 
 .lastfm-close-btn svg {
@@ -6347,7 +6429,7 @@ var ListeningStatsApp = (() => {
 
 .lastfm-input {
   background: var(--background-elevated-base);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--spice-rgb-text), 0.1);
   border-radius: 6px;
   padding: 10px 12px;
   font-size: 13px;
@@ -6394,9 +6476,9 @@ var ListeningStatsApp = (() => {
 
 .lastfm-error {
   font-size: 12px;
-  color: #e74c3c;
+  color: var(--spice-notification, #e74c3c);
   padding: 8px 12px;
-  background: rgba(231, 76, 60, 0.1);
+  background: color-mix(in srgb, var(--spice-notification, #e74c3c) 10%, transparent);
   border-radius: 6px;
 }
 
@@ -6413,7 +6495,7 @@ var ListeningStatsApp = (() => {
 
 .lastfm-btn.primary {
   background: var(--ls-accent);
-  color: #000;
+  color: var(--spice-main, #000);
 }
 
 .lastfm-btn.primary:hover {
@@ -6428,12 +6510,12 @@ var ListeningStatsApp = (() => {
 .lastfm-btn.secondary {
   background: transparent;
   color: var(--text-subdued);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(var(--spice-rgb-text), 0.15);
 }
 
 .lastfm-btn.secondary:hover {
   color: var(--text-base);
-  border-color: rgba(255, 255, 255, 0.3);
+  border-color: rgba(var(--spice-rgb-text), 0.3);
 }
 
 /* ===== Error State ===== */
@@ -6500,6 +6582,16 @@ var ListeningStatsApp = (() => {
   border-radius: 12px;
   animation: skeleton-pulse 1.5s ease-in-out infinite;
   min-height: 100px;
+}
+
+.skeleton-stat-value {
+  display: inline-block;
+  width: 48px;
+  height: 28px;
+  background: var(--text-base);
+  border-radius: 6px;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+  vertical-align: middle;
 }
 
 .skeleton-hero {
@@ -6607,7 +6699,7 @@ var ListeningStatsApp = (() => {
 
 .settings-close-btn:hover {
   color: var(--text-base);
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--spice-rgb-text), 0.1);
 }
 
 .settings-close-btn svg {
@@ -6630,7 +6722,7 @@ var ListeningStatsApp = (() => {
 .settings-lastfm {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid rgba(var(--spice-rgb-text), 0.06);
 }
 
 .settings-lastfm-connected {
@@ -6682,10 +6774,10 @@ var ListeningStatsApp = (() => {
 }
 
 .status-dot.green {
-  background: #1db954;
+  background: var(--ls-accent);
 }
 .status-dot.red {
-  background: #e74c3c;
+  background: var(--spice-notification, #e74c3c);
 }
 
 /* ===== Drag and Drop ===== */
@@ -6738,7 +6830,7 @@ var ListeningStatsApp = (() => {
   margin: 4px 0;
   pointer-events: none;
   animation: drop-indicator-pulse 1s ease-in-out infinite;
-  box-shadow: 0 0 8px rgba(29, 185, 84, 0.5);
+  box-shadow: 0 0 8px rgba(var(--ls-accent-rgb), 0.5);
 }
 
 @keyframes drop-indicator-pulse {
@@ -6821,7 +6913,7 @@ var ListeningStatsApp = (() => {
 
 .footer-btn.primary {
   background: var(--ls-accent);
-  color: #000;
+  color: var(--spice-main, #000);
 }
 
 .footer-btn.primary:hover {
@@ -6829,8 +6921,8 @@ var ListeningStatsApp = (() => {
 }
 
 .footer-btn.danger:hover {
-  background: #e74c3c;
-  color: #fff;
+  background: var(--spice-notification, #e74c3c);
+  color: var(--spice-text, #fff);
 }
 
 .version-text {
@@ -6899,7 +6991,7 @@ var ListeningStatsApp = (() => {
   margin-bottom: 24px;
   line-height: 1.6;
   color: var(--text-subdued, #b3b3b3);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--spice-rgb-text), 0.1);
 }
 
 .update-banner-changelog::-webkit-scrollbar {
@@ -6911,7 +7003,7 @@ var ListeningStatsApp = (() => {
 }
 
 .update-banner-changelog::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(var(--spice-rgb-text), 0.2);
   border-radius: 3px;
 }
 
@@ -6944,7 +7036,7 @@ var ListeningStatsApp = (() => {
 }
 
 .update-banner-changelog code {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--spice-rgb-text), 0.1);
   padding: 1px 5px;
   border-radius: 3px;
   font-family: monospace;
@@ -6952,7 +7044,7 @@ var ListeningStatsApp = (() => {
 }
 
 .update-banner-changelog a {
-  color: var(--text-bright-accent, #1db954);
+  color: var(--text-bright-accent, var(--ls-accent));
   text-decoration: none;
 }
 
@@ -6999,7 +7091,7 @@ var ListeningStatsApp = (() => {
 
 .update-banner-btn.primary {
   background: var(--ls-accent);
-  color: #000;
+  color: var(--spice-main, #000);
 }
 
 .update-banner-btn.primary:hover {
@@ -7014,12 +7106,12 @@ var ListeningStatsApp = (() => {
 .update-banner-btn.secondary {
   background: transparent;
   color: var(--text-base, #fff);
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  border: 1px solid rgba(var(--spice-rgb-text), 0.3);
 }
 
 .update-banner-btn.secondary:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(var(--spice-rgb-text), 0.1);
+  border-color: rgba(var(--spice-rgb-text), 0.5);
 }
 
 .updating-text {
@@ -7244,8 +7336,8 @@ var ListeningStatsApp = (() => {
 .setup-badge {
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-bright-accent, #1ed760);
-  background: rgba(30, 215, 96, 0.12);
+  color: var(--text-bright-accent, var(--ls-accent));
+  background: rgba(var(--ls-accent-rgb), 0.12);
   padding: 2px 8px;
   border-radius: 10px;
   margin-left: 8px;
@@ -7309,7 +7401,7 @@ var ListeningStatsApp = (() => {
   content: "";
   flex: 1;
   height: 1px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--spice-rgb-text), 0.08);
 }
 
 .setup-alt-option {
@@ -7318,7 +7410,7 @@ var ListeningStatsApp = (() => {
   gap: 12px;
   padding: 16px 20px;
   background: var(--background-elevated-base);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(var(--spice-rgb-text), 0.06);
   border-radius: 10px;
   cursor: pointer;
   width: 100%;
@@ -7459,7 +7551,7 @@ var ListeningStatsApp = (() => {
 .settings-export {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid rgba(var(--spice-rgb-text), 0.06);
 }
 
 .settings-export .settings-section-title {
@@ -7527,7 +7619,7 @@ var ListeningStatsApp = (() => {
 }
 
 .share-preview {
-  background: #000;
+  background: var(--spice-main, #000);
   border-radius: 8px;
   overflow: hidden;
   margin-bottom: 16px;
@@ -7651,7 +7743,7 @@ var ListeningStatsApp = (() => {
   height: 24px;
   border-radius: 12px;
   border: none;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--spice-rgb-text), 0.1);
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
@@ -7669,7 +7761,7 @@ var ListeningStatsApp = (() => {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: white;
+  background: var(--spice-main, white);
   transition: transform 0.2s;
 }
 
@@ -7687,7 +7779,7 @@ var ListeningStatsApp = (() => {
 .settings-count-btn {
   padding: 4px 10px;
   border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--spice-rgb-text), 0.1);
   background: transparent;
   color: var(--text-subdued);
   cursor: pointer;
@@ -7696,13 +7788,13 @@ var ListeningStatsApp = (() => {
 }
 
 .settings-count-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--spice-rgb-text), 0.08);
   color: var(--text-base);
 }
 
 .settings-count-btn.active {
   background: var(--ls-accent, #1db954);
-  color: #fff;
+  color: var(--spice-main, #000);
   border-color: transparent;
 }
 
@@ -7778,7 +7870,7 @@ var ListeningStatsApp = (() => {
   position: relative;
   height: 32px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--spice-rgb-text), 0.04);
   overflow: hidden;
 }
 
@@ -7828,7 +7920,7 @@ var ListeningStatsApp = (() => {
 .settings-danger-zone {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid rgba(255, 80, 80, 0.15);
+  border-top: 1px solid color-mix(in srgb, var(--spice-notification, #e74c3c) 15%, transparent);
 }
 
 .settings-danger-desc {
@@ -7870,8 +7962,8 @@ var ListeningStatsApp = (() => {
 
 /* ===== Hover Tooltips for Stat Cards (DISP-03) ===== */
 .stat-tooltip-portal {
-  background: rgba(0, 0, 0, 0.85);
-  color: #fff;
+  background: rgba(var(--spice-rgb-main), 0.85);
+  color: var(--spice-text, #fff);
   font-size: 11px;
   font-weight: 400;
   padding: 6px 10px;
@@ -7882,7 +7974,7 @@ var ListeningStatsApp = (() => {
 
 /* ===== Collapsible Settings Categories (SETT-01) ===== */
 .settings-category {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(var(--spice-rgb-text), 0.06);
 }
 
 .settings-category:last-child {
@@ -8001,13 +8093,13 @@ var ListeningStatsApp = (() => {
 }
 
 .tour-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--spice-rgb-text), 0.1);
 }
 
 .tour-btn--primary {
   background: var(--ls-accent, #1db954);
   border-color: var(--ls-accent, #1db954);
-  color: #fff;
+  color: var(--spice-main, #000);
 }
 
 .tour-btn--primary:hover {
@@ -8085,14 +8177,14 @@ var ListeningStatsApp = (() => {
 .wizard-card {
   padding: 16px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--spice-rgb-text), 0.05);
   cursor: pointer;
   transition: background 0.2s;
   margin-bottom: 12px;
 }
 
 .wizard-card:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--spice-rgb-text), 0.1);
 }
 
 .wizard-card.recommended {
@@ -8176,7 +8268,7 @@ var ListeningStatsApp = (() => {
 .wizard-spinner {
   width: 32px;
   height: 32px;
-  border: 3px solid rgba(255, 255, 255, 0.1);
+  border: 3px solid rgba(var(--spice-rgb-text), 0.1);
   border-top-color: var(--ls-accent, #1db954);
   border-radius: 50%;
   margin: 0 auto;
@@ -8205,7 +8297,7 @@ var ListeningStatsApp = (() => {
   margin-top: 8px;
   font-size: 13px;
   padding: 10px 14px;
-  background: rgba(231, 76, 60, 0.1);
+  background: color-mix(in srgb, var(--spice-notification, #e74c3c) 10%, transparent);
   border-radius: 8px;
 }
 
@@ -8229,7 +8321,7 @@ var ListeningStatsApp = (() => {
 }
 
 .provider-setup-link:hover {
-  color: var(--text-bright-accent, #1db954);
+  color: var(--text-bright-accent, var(--ls-accent));
 }
 
 .provider-setup-link svg {
@@ -8589,6 +8681,17 @@ var ListeningStatsApp = (() => {
         try {
           const data = await calculateStats(this.state.period);
           this.setState({ stats: data, loading: false, errorType: null });
+          const provider = getActiveProvider();
+          if (provider?.calculateDateMetrics) {
+            provider.calculateDateMetrics(this.state.period).then((dateMetrics) => {
+              this.setState((prev) => {
+                if (!prev.stats) return null;
+                return { stats: { ...prev.stats, ...dateMetrics } };
+              });
+            }).catch((e) => {
+              console.warn("[listening-stats] Date metrics load failed:", e);
+            });
+          }
           if (data.topTracks.length > 0 && data.topTracks[0].trackUri) {
             const uris = data.topTracks.map((t) => t.trackUri).filter(Boolean);
             if (uris.length > 0) {
@@ -8596,7 +8699,6 @@ var ListeningStatsApp = (() => {
               this.setState({ likedTracks: liked });
             }
           }
-          const provider = getActiveProvider();
           if (provider?.prefetchPeriod) {
             const idx = provider.periods.indexOf(this.state.period);
             const adjacent = [
@@ -8621,6 +8723,17 @@ var ListeningStatsApp = (() => {
         try {
           const data = await calculateStats(this.state.period);
           this.setState({ stats: data });
+          const provider = getActiveProvider();
+          if (provider?.calculateDateMetrics) {
+            provider.calculateDateMetrics(this.state.period).then((dateMetrics) => {
+              this.setState((prev) => {
+                if (!prev.stats) return null;
+                return { stats: { ...prev.stats, ...dateMetrics } };
+              });
+            }).catch((e) => {
+              console.warn("[listening-stats] Date metrics load failed:", e);
+            });
+          }
           if (data.topTracks.length > 0 && data.topTracks[0].trackUri) {
             const uris = data.topTracks.map((t) => t.trackUri).filter(Boolean);
             if (uris.length > 0) {
