@@ -7,17 +7,21 @@ import {
 import * as LastFm from "../../services/lastfm";
 import { getPreferences, setPreference } from "../../services/preferences";
 
+import { EVENTS, clearAllLocalStorage } from "../../constants";
+import { error } from "../../services/logger";
 import {
   activateProvider,
   clearProviderSelection,
-  getActiveProvider,
   getSelectedProviderType,
 } from "../../services/providers";
 import { clearApiCaches, resetRateLimit } from "../../services/spotify-api";
 import { clearStatsCache } from "../../services/stats";
 import * as Statsfm from "../../services/statsfm";
-import { clearAllData as clearIndexedDB, deduplicateExistingEvents, runTrackingTest } from "../../services/storage";
-import { error } from "../../services/logger";
+import {
+  clearAllData as clearIndexedDB,
+  deduplicateExistingEvents,
+  runTrackingTest,
+} from "../../services/storage";
 import {
   clearPollingData,
   getTrackingStatus,
@@ -31,7 +35,6 @@ import {
 } from "../../services/tracker";
 import { ListeningStats, ProviderType } from "../../types/listeningstats";
 import { Icons } from "../icons";
-import { LS_KEYS, EVENTS, clearAllLocalStorage } from "../../constants";
 
 const { useState, useEffect, useReducer } = Spicetify.React;
 
@@ -60,20 +63,33 @@ type ProviderFormAction =
   | { type: "SFM_VALIDATE_ERROR"; error: string }
   | { type: "SFM_VALIDATE_SUCCESS" };
 
-function providerFormReducer(state: ProviderFormState, action: ProviderFormAction): ProviderFormState {
+function providerFormReducer(
+  state: ProviderFormState,
+  action: ProviderFormAction,
+): ProviderFormState {
   switch (action.type) {
     case "TOGGLE_PICKER":
       return { ...state, showProviderPicker: !state.showProviderPicker };
     case "CLOSE_PICKER":
       return { ...state, showProviderPicker: false };
     case "SET_LFM_FIELD":
-      return { ...state, [action.field === "username" ? "lfmUsername" : "lfmApiKey"]: action.value };
+      return {
+        ...state,
+        [action.field === "username" ? "lfmUsername" : "lfmApiKey"]:
+          action.value,
+      };
     case "LFM_VALIDATE_START":
       return { ...state, lfmValidating: true, lfmError: "" };
     case "LFM_VALIDATE_ERROR":
       return { ...state, lfmValidating: false, lfmError: action.error };
     case "LFM_VALIDATE_SUCCESS":
-      return { ...state, lfmValidating: false, lfmError: "", lfmUsername: "", lfmApiKey: "" };
+      return {
+        ...state,
+        lfmValidating: false,
+        lfmError: "",
+        lfmUsername: "",
+        lfmApiKey: "",
+      };
     case "SET_SFM_USERNAME":
       return { ...state, sfmUsername: action.value };
     case "SFM_VALIDATE_START":
@@ -103,7 +119,10 @@ type DisplayPrefsAction =
   | { type: "TOGGLE_SECTION"; sectionId: string }
   | { type: "RESET_DISPLAY"; itemCount: number; genreCount: number };
 
-function displayPrefsReducer(state: DisplayPrefsState, action: DisplayPrefsAction): DisplayPrefsState {
+function displayPrefsReducer(
+  state: DisplayPrefsState,
+  action: DisplayPrefsAction,
+): DisplayPrefsState {
   switch (action.type) {
     case "SET_USE_24H":
       return { ...state, use24h: action.value };
@@ -121,7 +140,12 @@ function displayPrefsReducer(state: DisplayPrefsState, action: DisplayPrefsActio
       };
     }
     case "RESET_DISPLAY":
-      return { ...state, hiddenSections: [], itemCount: action.itemCount, genreCount: action.genreCount };
+      return {
+        ...state,
+        hiddenSections: [],
+        itemCount: action.itemCount,
+        genreCount: action.genreCount,
+      };
     default:
       return state;
   }
@@ -142,7 +166,10 @@ type AdvancedAction =
   | { type: "SET_SKIP_REPEATS"; value: boolean }
   | { type: "SET_DEDUP_RUNNING"; value: boolean };
 
-function advancedReducer(state: AdvancedState, action: AdvancedAction): AdvancedState {
+function advancedReducer(
+  state: AdvancedState,
+  action: AdvancedAction,
+): AdvancedState {
   switch (action.type) {
     case "SET_LOGGING":
       return { ...state, loggingOn: action.value };
@@ -246,20 +273,28 @@ export function SettingsPanel({
     dedupRunning: false,
   });
 
-  const [lastTracked, setLastTracked] = useState<{ name: string | null; time: number | null }>({ name: null, time: null });
+  const [lastTracked, setLastTracked] = useState<{
+    name: string | null;
+    time: number | null;
+  }>({ name: null, time: null });
 
   useEffect(() => {
     if (currentProvider !== "local") return;
     const update = () => {
       const status = getTrackingStatus();
-      setLastTracked({ name: status.lastSuccessfulTrackName, time: status.lastSuccessfulWriteAt });
+      setLastTracked({
+        name: status.lastSuccessfulTrackName,
+        time: status.lastSuccessfulWriteAt,
+      });
     };
     update();
     const id = setInterval(update, 5000);
     return () => clearInterval(id);
   }, [currentProvider]);
 
-  const [testResult, setTestResult] = useState<"idle" | "running" | "ok" | "fail">("idle");
+  const [testResult, setTestResult] = useState<
+    "idle" | "running" | "ok" | "fail"
+  >("idle");
 
   const lfmConnected = LastFm.isConnected();
   const lfmConfig = LastFm.getConfig();
@@ -278,7 +313,7 @@ export function SettingsPanel({
       const result = await deduplicateExistingEvents();
       if (result.removed > 0) {
         Spicetify.showNotification(
-          `Removed ${result.removed} duplicate entries across ${result.affectedTracks} tracks`
+          `Removed ${result.removed} duplicate entries across ${result.affectedTracks} tracks`,
         );
       } else {
         Spicetify.showNotification("No duplicates found");
@@ -295,7 +330,10 @@ export function SettingsPanel({
 
   const handleLastfmSwitch = async () => {
     if (!provForm.lfmUsername.trim() || !provForm.lfmApiKey.trim()) {
-      dispatchProv({ type: "LFM_VALIDATE_ERROR", error: "Both fields are required" });
+      dispatchProv({
+        type: "LFM_VALIDATE_ERROR",
+        error: "Both fields are required",
+      });
       return;
     }
     dispatchProv({ type: "LFM_VALIDATE_START" });
@@ -304,17 +342,26 @@ export function SettingsPanel({
         provForm.lfmUsername.trim(),
         provForm.lfmApiKey.trim(),
       );
-      LastFm.saveConfig({ username: info.username, apiKey: provForm.lfmApiKey.trim() });
+      LastFm.saveConfig({
+        username: info.username,
+        apiKey: provForm.lfmApiKey.trim(),
+      });
       dispatchProv({ type: "LFM_VALIDATE_SUCCESS" });
       switchProvider("lastfm");
     } catch (err: any) {
-      dispatchProv({ type: "LFM_VALIDATE_ERROR", error: err.message || "Connection failed" });
+      dispatchProv({
+        type: "LFM_VALIDATE_ERROR",
+        error: err.message || "Connection failed",
+      });
     }
   };
 
   const handleStatsfmSwitch = async () => {
     if (!provForm.sfmUsername.trim()) {
-      dispatchProv({ type: "SFM_VALIDATE_ERROR", error: "Username is required" });
+      dispatchProv({
+        type: "SFM_VALIDATE_ERROR",
+        error: "Username is required",
+      });
       return;
     }
     dispatchProv({ type: "SFM_VALIDATE_START" });
@@ -324,7 +371,10 @@ export function SettingsPanel({
       dispatchProv({ type: "SFM_VALIDATE_SUCCESS" });
       switchProvider("statsfm");
     } catch (err: any) {
-      dispatchProv({ type: "SFM_VALIDATE_ERROR", error: err.message || "Connection failed" });
+      dispatchProv({
+        type: "SFM_VALIDATE_ERROR",
+        error: err.message || "Connection failed",
+      });
     }
   };
 
@@ -430,16 +480,25 @@ export function SettingsPanel({
                     type="text"
                     placeholder="stats.fm username"
                     value={provForm.sfmUsername}
-                    onChange={(e: any) => dispatchProv({ type: "SET_SFM_USERNAME", value: e.target.value })}
+                    onChange={(e: any) =>
+                      dispatchProv({
+                        type: "SET_SFM_USERNAME",
+                        value: e.target.value,
+                      })
+                    }
                     disabled={provForm.sfmValidating}
                   />
-                  {provForm.sfmError && <div className="lastfm-error">{provForm.sfmError}</div>}
+                  {provForm.sfmError && (
+                    <div className="lastfm-error">{provForm.sfmError}</div>
+                  )}
                   <button
                     className="footer-btn primary"
                     onClick={handleStatsfmSwitch}
                     disabled={provForm.sfmValidating}
                   >
-                    {provForm.sfmValidating ? "Connecting..." : "Connect & Switch"}
+                    {provForm.sfmValidating
+                      ? "Connecting..."
+                      : "Connect & Switch"}
                   </button>
                 </div>
                 <a
@@ -482,7 +541,13 @@ export function SettingsPanel({
                     type="text"
                     placeholder="Username"
                     value={provForm.lfmUsername}
-                    onChange={(e: any) => dispatchProv({ type: "SET_LFM_FIELD", field: "username", value: e.target.value })}
+                    onChange={(e: any) =>
+                      dispatchProv({
+                        type: "SET_LFM_FIELD",
+                        field: "username",
+                        value: e.target.value,
+                      })
+                    }
                     disabled={provForm.lfmValidating}
                   />
                   <input
@@ -490,16 +555,26 @@ export function SettingsPanel({
                     type="text"
                     placeholder="API key"
                     value={provForm.lfmApiKey}
-                    onChange={(e: any) => dispatchProv({ type: "SET_LFM_FIELD", field: "apiKey", value: e.target.value })}
+                    onChange={(e: any) =>
+                      dispatchProv({
+                        type: "SET_LFM_FIELD",
+                        field: "apiKey",
+                        value: e.target.value,
+                      })
+                    }
                     disabled={provForm.lfmValidating}
                   />
-                  {provForm.lfmError && <div className="lastfm-error">{provForm.lfmError}</div>}
+                  {provForm.lfmError && (
+                    <div className="lastfm-error">{provForm.lfmError}</div>
+                  )}
                   <button
                     className="footer-btn primary"
                     onClick={handleLastfmSwitch}
                     disabled={provForm.lfmValidating}
                   >
-                    {provForm.lfmValidating ? "Connecting..." : "Connect & Switch"}
+                    {provForm.lfmValidating
+                      ? "Connecting..."
+                      : "Connect & Switch"}
                   </button>
                 </div>
                 <a
@@ -684,13 +759,15 @@ export function SettingsPanel({
           <button
             className="footer-btn"
             onClick={() => {
-              window.dispatchEvent(
-                new CustomEvent(EVENTS.RESET_LAYOUT),
-              );
+              window.dispatchEvent(new CustomEvent(EVENTS.RESET_LAYOUT));
               setPreference("hiddenSections", []);
               setPreference("itemsPerSection", 5);
               setPreference("genresPerSection", 5);
-              dispatchDisplay({ type: "RESET_DISPLAY", itemCount: 5, genreCount: 5 });
+              dispatchDisplay({
+                type: "RESET_DISPLAY",
+                itemCount: 5,
+                genreCount: 5,
+              });
               Spicetify.showNotification("Layout reset to default");
             }}
           >
@@ -717,7 +794,6 @@ export function SettingsPanel({
           </button>
         </div>
       </SettingsCategory>
-
 
       {/* --- Advanced --- */}
       <SettingsCategory title="Advanced">
@@ -750,7 +826,8 @@ export function SettingsPanel({
               <div className="settings-toggle-info">
                 <h4 className="settings-section-title">Pause Tracking</h4>
                 <p className="settings-toggle-desc">
-                  Stop recording plays. Resume to start tracking again from this point.
+                  Stop recording plays. Resume to start tracking again from this
+                  point.
                 </p>
               </div>
               <Toggle
@@ -759,7 +836,9 @@ export function SettingsPanel({
                   setTrackingPaused(next);
                   if (!next) resetAccumulator();
                   dispatchAdv({ type: "SET_TRACKING_PAUSED", value: next });
-                  Spicetify.showNotification(next ? "Tracking paused" : "Tracking resumed");
+                  Spicetify.showNotification(
+                    next ? "Tracking paused" : "Tracking resumed",
+                  );
                 }}
               />
             </div>
@@ -785,7 +864,7 @@ export function SettingsPanel({
                 <div className="settings-toggle-info">
                   <h4 className="settings-section-title">Last Tracked</h4>
                   <p className="settings-toggle-desc">
-                    {lastTracked.name} — {formatTimeAgo(lastTracked.time)}
+                    {lastTracked.name} - {formatTimeAgo(lastTracked.time)}
                   </p>
                 </div>
               </div>
@@ -795,7 +874,8 @@ export function SettingsPanel({
               <div className="settings-toggle-info">
                 <h4 className="settings-section-title">Test Tracking</h4>
                 <p className="settings-toggle-desc">
-                  Write a test event to the database and verify it can be read back.
+                  Write a test event to the database and verify it can be read
+                  back.
                 </p>
               </div>
               <button
@@ -807,7 +887,9 @@ export function SettingsPanel({
                     const result = await runTrackingTest();
                     setTestResult(result.ok ? "ok" : "fail");
                     Spicetify.showNotification(
-                      result.ok ? "Tracking is working" : `Tracking broken: ${result.error}`,
+                      result.ok
+                        ? "Tracking is working"
+                        : `Tracking broken: ${result.error}`,
                       !result.ok,
                     );
                   } catch {
@@ -816,7 +898,13 @@ export function SettingsPanel({
                   }
                 }}
               >
-                {testResult === "running" ? "Testing..." : testResult === "ok" ? "Passed" : testResult === "fail" ? "Failed — Retry" : "Test"}
+                {testResult === "running"
+                  ? "Testing..."
+                  : testResult === "ok"
+                    ? "Passed"
+                    : testResult === "fail"
+                      ? "Failed: Retry"
+                      : "Test"}
               </button>
             </div>
           </>
@@ -876,9 +964,7 @@ export function SettingsPanel({
             <button
               className="footer-btn"
               disabled={!stats}
-              onClick={() =>
-                stats && period && exportStatsAsCSV(stats, period)
-              }
+              onClick={() => stats && period && exportStatsAsCSV(stats, period)}
             >
               Export CSV
             </button>
@@ -961,7 +1047,6 @@ export function SettingsPanel({
           </button>
         </div>
       </SettingsCategory>
-
     </div>
   );
 }

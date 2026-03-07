@@ -1,15 +1,17 @@
+import { clearConfig as clearLastfmConfig } from "./services/lastfm";
+import { getLastError, getLogs, log } from "./services/logger";
 import {
+  activateProvider,
   getSelectedProviderType,
   hasExistingData,
-  activateProvider,
   setSelectedProviderType,
 } from "./services/providers";
-import { clearConfig as clearLastfmConfig } from "./services/lastfm";
-import { getLogs, getLastError, log } from "./services/logger";
-import { getTrackingStatus, initPoller } from "./services/tracker";
 import { runTrackingTest, startupIntegrityCheck } from "./services/storage";
-import { setTrackingHealthy } from "./services/tracker";
-
+import {
+  getTrackingStatus,
+  initPoller,
+  setTrackingHealthy,
+} from "./services/tracker";
 
 (window as any).ListeningStats = {
   resetLastfmKey: () => {
@@ -27,12 +29,15 @@ import { setTrackingHealthy } from "./services/tracker";
 };
 
 async function main(): Promise<void> {
-  // Always start local tracking from the extension — it persists across provider switches
+  // Always start local tracking from the extension, it persists across provider switches
   initPoller("local");
   startupIntegrityCheck().then((result) => {
     if (!result.ok) {
       setTrackingHealthy(false, result.error);
-      console.warn("[listening-stats] Startup integrity check failed:", result.error);
+      console.warn(
+        "[listening-stats] Startup integrity check failed:",
+        result.error,
+      );
       Spicetify?.showNotification?.(
         "Tracking database issue detected \u2014 try restarting Spotify",
         true,
@@ -50,14 +55,18 @@ async function main(): Promise<void> {
   if (providerType) {
     activateProvider(providerType);
   }
-
 }
 
 (function init(retries = 0) {
   if (!Spicetify.Player || !Spicetify.Platform || !Spicetify.CosmosAsync) {
     if (retries >= 50) {
-      console.error("[listening-stats] Spicetify not ready after 5s, giving up");
-      Spicetify?.showNotification?.("Listening Stats failed to initialize — try restarting Spotify", true);
+      console.error(
+        "[listening-stats] Spicetify not ready after 5s, giving up",
+      );
+      Spicetify?.showNotification?.(
+        "Listening Stats failed to initialize: try restarting Spotify",
+        true,
+      );
       return;
     }
     setTimeout(() => init(retries + 1), 100);

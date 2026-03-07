@@ -83,7 +83,7 @@ export function generateShareText(
   if (stats.topArtists[0]) {
     lines.push(`Top Artist: ${stats.topArtists[0].artistName}`);
   }
-  if (stats.streakDays > 0) {
+  if (stats.streakDays != null && stats.streakDays > 0) {
     lines.push(`${stats.streakDays}-day streak`);
   }
 

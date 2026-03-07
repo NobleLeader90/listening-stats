@@ -27,7 +27,7 @@ export function exportStatsAsJSON(stats: ListeningStats, period: string): void {
     trackCount: stats.trackCount,
     uniqueTrackCount: stats.uniqueTrackCount,
     uniqueArtistCount: stats.uniqueArtistCount,
-    streakDays: stats.streakDays,
+    streakDays: stats.streakDays ?? 0,
     skipRate: Math.round(stats.skipRate * 100),
     topTracks: stats.topTracks.map((t) => ({
       rank: t.rank,

@@ -220,8 +220,7 @@ function DashboardSections(props: DashboardSectionsProps) {
       startTour(buildTourSteps(props.providerType));
     };
     window.addEventListener(EVENTS.START_TOUR, handler);
-    return () =>
-      window.removeEventListener(EVENTS.START_TOUR, handler);
+    return () => window.removeEventListener(EVENTS.START_TOUR, handler);
   }, [startTour]);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -467,7 +466,10 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
             this.setState({ showSfmPromo: true });
           }
         } catch (e) {
-          console.warn("[listening-stats] Failed to read SFM promo dismissed flag", e);
+          console.warn(
+            "[listening-stats] Failed to read SFM promo dismissed flag",
+            e,
+          );
         }
       }
     }
@@ -538,6 +540,22 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
       const data = await calculateStats(this.state.period);
       this.setState({ stats: data, loading: false, errorType: null });
 
+      // Two-phase load: if provider supports date metrics, load them async
+      const provider = getActiveProvider();
+      if (provider?.calculateDateMetrics) {
+        provider
+          .calculateDateMetrics(this.state.period)
+          .then((dateMetrics) => {
+            this.setState((prev) => {
+              if (!prev.stats) return null;
+              return { stats: { ...prev.stats, ...dateMetrics } };
+            });
+          })
+          .catch((e) => {
+            console.warn("[listening-stats] Date metrics load failed:", e);
+          });
+      }
+
       if (data.topTracks.length > 0 && data.topTracks[0].trackUri) {
         const uris = data.topTracks.map((t) => t.trackUri).filter(Boolean);
         if (uris.length > 0) {
@@ -546,7 +564,6 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
         }
       }
 
-      const provider = getActiveProvider();
       if (provider?.prefetchPeriod) {
         const idx = provider.periods.indexOf(this.state.period);
         const adjacent = [
@@ -572,6 +589,22 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
     try {
       const data = await calculateStats(this.state.period);
       this.setState({ stats: data });
+
+      // Two-phase load: if provider supports date metrics, load them async
+      const provider = getActiveProvider();
+      if (provider?.calculateDateMetrics) {
+        provider
+          .calculateDateMetrics(this.state.period)
+          .then((dateMetrics) => {
+            this.setState((prev) => {
+              if (!prev.stats) return null;
+              return { stats: { ...prev.stats, ...dateMetrics } };
+            });
+          })
+          .catch((e) => {
+            console.warn("[listening-stats] Date metrics load failed:", e);
+          });
+      }
 
       if (data.topTracks.length > 0 && data.topTracks[0].trackUri) {
         const uris = data.topTracks.map((t) => t.trackUri).filter(Boolean);
@@ -608,7 +641,10 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
     try {
       localStorage.setItem(LS_KEYS.SFM_PROMO_DISMISSED, "1");
     } catch (e) {
-      console.warn("[listening-stats] Failed to write SFM promo dismissed flag", e);
+      console.warn(
+        "[listening-stats] Failed to write SFM promo dismissed flag",
+        e,
+      );
     }
   };
 
@@ -647,7 +683,10 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
             showSfmPromo = true;
           }
         } catch (e) {
-          console.warn("[listening-stats] Failed to read SFM promo dismissed flag", e);
+          console.warn(
+            "[listening-stats] Failed to read SFM promo dismissed flag",
+            e,
+          );
         }
       }
       persistPeriod(provider.defaultPeriod);
@@ -677,7 +716,10 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
         try {
           localStorage.setItem(LS_KEYS.SFM_PROMO_DISMISSED, "1");
         } catch (e) {
-          console.warn("[listening-stats] Failed to write SFM promo dismissed flag", e);
+          console.warn(
+            "[listening-stats] Failed to write SFM promo dismissed flag",
+            e,
+          );
         }
       }
       persistPeriod(provider.defaultPeriod);
@@ -727,15 +769,16 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
     const periodLabels = provider?.periodLabels || { recent: "Recent" };
     const showLikeButtons = providerType !== "lastfm";
 
-    const sfmPromoPortal = showSfmPromo && providerType !== "statsfm"
-      ? Spicetify.ReactDOM.createPortal(
-          <SfmPromoPopup
-            onDismiss={this.dismissSfmPromo}
-            onSwitch={this.handleSfmSwitch}
-          />,
-          document.body,
-        )
-      : null;
+    const sfmPromoPortal =
+      showSfmPromo && providerType !== "statsfm"
+        ? Spicetify.ReactDOM.createPortal(
+            <SfmPromoPopup
+              onDismiss={this.dismissSfmPromo}
+              onSwitch={this.handleSfmSwitch}
+            />,
+            document.body,
+          )
+        : null;
 
     if (showUpdateBanner && updateInfo) {
       return (

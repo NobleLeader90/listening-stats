@@ -235,7 +235,26 @@ export async function getRecentStreams(
   return data.items || [];
 }
 
-export async function getStreamStats(range: StatsfmRange): Promise<StatsfmStreamStats> {
+export async function getStreams(options: {
+  before?: number;
+  after?: number;
+  limit?: number;
+  order?: "asc" | "desc";
+}): Promise<StatsfmRecentStream[]> {
+  const params = new URLSearchParams();
+  if (options.before) params.set("before", String(options.before));
+  if (options.after) params.set("after", String(options.after));
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.order) params.set("order", options.order);
+  const data = await statsfmFetch<any>(
+    `/users/${getUsername()}/streams?${params.toString()}`,
+  );
+  return data.items || [];
+}
+
+export async function getStreamStats(
+  range: StatsfmRange,
+): Promise<StatsfmStreamStats> {
   const data = await statsfmFetch<any>(
     `/users/${getUsername()}/streams/stats?range=${range}`,
   );
@@ -255,7 +274,7 @@ export async function getDateStats(
   range: StatsfmRange,
   timeZoneOffset?: number,
 ): Promise<StatsfmDateStats> {
-  const tz = timeZoneOffset ?? -(new Date().getTimezoneOffset());
+  const tz = timeZoneOffset ?? -new Date().getTimezoneOffset();
   const data = await statsfmFetch<any>(
     `/users/${getUsername()}/streams/stats/dates?range=${range}&timeZoneOffset=${tz}`,
   );

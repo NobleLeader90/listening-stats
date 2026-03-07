@@ -56,7 +56,9 @@ export function Header({
   onToggleSettings,
   providerType,
 }: HeaderProps) {
-  const [trackingHealth, setTrackingHealth] = useState<TrackingStatus | null>(null);
+  const [trackingHealth, setTrackingHealth] = useState<TrackingStatus | null>(
+    null,
+  );
 
   useEffect(() => {
     if (providerType !== "local") {
@@ -84,12 +86,20 @@ export function Header({
                 via {PROVIDER_NAMES[providerType]}
                 {trackingHealth && (
                   <TooltipWrapper
-                    label={trackingHealth.healthy ? "Tracking active" : `Tracking issue: ${trackingHealth.lastError || "unknown"}`}
+                    label={
+                      trackingHealth.healthy
+                        ? "Tracking active"
+                        : `Tracking issue: ${trackingHealth.lastError || "unknown"}`
+                    }
                     placement="top"
                   >
                     <span
                       className={`status-dot ${trackingHealth.healthy ? "green" : "red"}`}
-                      style={{ display: "inline-block", marginLeft: 6, verticalAlign: "middle" }}
+                      style={{
+                        display: "inline-block",
+                        marginLeft: 6,
+                        verticalAlign: "middle",
+                      }}
                     />
                   </TooltipWrapper>
                 )}

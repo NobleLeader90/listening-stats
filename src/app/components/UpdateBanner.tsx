@@ -26,7 +26,14 @@ export function UpdateBanner({
               v{updateInfo.currentVersion} → v{updateInfo.latestVersion}
             </div>
           </div>
-          {updateInfo.changelog && <div className="update-banner-changelog" dangerouslySetInnerHTML={{ __html: renderMarkdown(updateInfo.changelog) }} />}
+          {updateInfo.changelog && (
+            <div
+              className="update-banner-changelog"
+              dangerouslySetInnerHTML={{
+                __html: renderMarkdown(updateInfo.changelog),
+              }}
+            />
+          )}
           <div className="update-banner-links">
             <a
               className="lastfm-help-link standalone"

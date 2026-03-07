@@ -3,6 +3,7 @@ import {
   PlayEvent,
   RecentTrack,
 } from "../../types/listeningstats";
+import { toLocalDateKey } from "../../utils/dateKey";
 import { calculateStreak } from "../../utils/streak";
 import { getArtistsBatch } from "../spotify-api";
 import {
@@ -31,20 +32,28 @@ export function createLocalProvider(): TrackingProvider {
 
     init() {
       resetDBPromise();
-      // Tracking (initPoller) is managed by extension.js — always runs, survives provider switches
+      // Tracking (initPoller) is managed by extension.js, always runs, survives provider switches
     },
 
     destroy() {
       resetDBPromise();
-      // Do NOT call destroyPoller() — local tracking persists across provider switches
+      // Do NOT call destroyPoller(), local tracking persists across provider switches
     },
 
     async calculateStats(period: string): Promise<ListeningStats> {
       const events = await getEventsForPeriod(period);
-      // Streak is an all-time metric, fetch all events for it when not already all_time
-      const allEvents =
-        period === "all_time" ? events : await getAllPlayEvents();
-      return aggregateEvents(events, allEvents);
+      return aggregateEvents(events);
+    },
+
+    async calculateDateMetrics(
+      _period: string,
+    ): Promise<{ streakDays: number }> {
+      const allEvents = await getAllPlayEvents();
+      const allDates = Array.from(
+        new Set(allEvents.map((e) => toLocalDateKey(e.startedAt))),
+      );
+
+      return { streakDays: calculateStreak(allDates) };
     },
 
     clearData() {
@@ -90,10 +99,7 @@ async function getEventsForPeriod(period: string): Promise<PlayEvent[]> {
   return getPlayEventsByTimeRange(start, end);
 }
 
-async function aggregateEvents(
-  events: PlayEvent[],
-  allEvents: PlayEvent[],
-): Promise<ListeningStats> {
+async function aggregateEvents(events: PlayEvent[]): Promise<ListeningStats> {
   // Separate completed plays from skips, rankings use only completed plays
   const completedEvents = events.filter((e) => e.type !== "skip");
 
@@ -309,18 +315,6 @@ async function aggregateEvents(
     completedEvents.map((e) => e.artistUri).filter(Boolean),
   );
 
-  // Days listened: distinct days in the selected period
-  const periodDates = new Set(
-    events.map((e) => new Date(e.startedAt).toISOString().split("T")[0]),
-  );
-
-  // Streak: consecutive days from today using ALL events (cross-period metric)
-  const allDates = Array.from(
-    new Set(
-      allEvents.map((e) => new Date(e.startedAt).toISOString().split("T")[0]),
-    ),
-  );
-
   const totalTimeMs = events.reduce((sum, e) => sum + e.playedMs, 0);
 
   // Skip rate from event type (set by tracker based on play threshold)
@@ -339,10 +333,10 @@ async function aggregateEvents(
     recentTracks,
     genres,
     topGenres,
-    streakDays: calculateStreak(allDates),
+    streakDays: null,
     newArtistsCount: 0,
     skipRate: events.length > 0 ? skipEvents / events.length : 0,
-    listenedDays: periodDates.size,
+    listenedDays: null,
     lastfmConnected: false,
   };
 }

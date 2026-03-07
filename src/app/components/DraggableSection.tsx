@@ -44,8 +44,7 @@ export function DraggableSection({
   isDragging,
   dropPosition,
 }: DraggableSectionProps) {
-  const wrapperClass =
-    "draggable-section" + (isDragging ? " is-dragging" : "");
+  const wrapperClass = "draggable-section" + (isDragging ? " is-dragging" : "");
 
   return (
     <div

@@ -495,7 +495,14 @@ async function generateStoryCard(
   const artY = headerY;
 
   if (stats.topTracks[0]) {
-    const drew = await drawArt(ctx, stats.topTracks[0].albumArt, artX, artY, artSize, 16);
+    const drew = await drawArt(
+      ctx,
+      stats.topTracks[0].albumArt,
+      artX,
+      artY,
+      artSize,
+      16,
+    );
     if (!drew) drawPlaceholderArt(ctx, artX, artY, artSize, 16);
 
     // Glow
@@ -511,10 +518,18 @@ async function generateStoryCard(
     ctx.textAlign = "center";
     ctx.fillStyle = "#fff";
     ctx.font = `bold ${28}px ${FONT}`;
-    ctx.fillText(truncateText(ctx, stats.topTracks[0].trackName, innerW - 40), w / 2, artY + artSize + 40);
+    ctx.fillText(
+      truncateText(ctx, stats.topTracks[0].trackName, innerW - 40),
+      w / 2,
+      artY + artSize + 40,
+    );
     ctx.fillStyle = "rgba(255,255,255,0.6)";
     ctx.font = `${18}px ${FONT}`;
-    ctx.fillText(truncateText(ctx, stats.topTracks[0].artistName, innerW - 40), w / 2, artY + artSize + 68);
+    ctx.fillText(
+      truncateText(ctx, stats.topTracks[0].artistName, innerW - 40),
+      w / 2,
+      artY + artSize + 68,
+    );
     ctx.fillStyle = rgb(accent, 0.7);
     ctx.font = `600 ${14}px ${FONT}`;
     ctx.fillText("#1 Most Played", w / 2, artY + artSize + 92);
@@ -529,14 +544,70 @@ async function generateStoryCard(
   const cardW = (innerW - gridGap * 2) / 3;
   const cardH = 68;
 
-  drawStatCard(ctx, pad, y, cardW, cardH, formatDurationLong(stats.totalTimeMs), "LISTENED", accent, true);
-  drawStatCard(ctx, pad + cardW + gridGap, y, cardW, cardH, `${stats.trackCount}`, "PLAYS", accent);
-  drawStatCard(ctx, pad + (cardW + gridGap) * 2, y, cardW, cardH, `${stats.uniqueTrackCount}`, "UNIQUE", accent);
+  drawStatCard(
+    ctx,
+    pad,
+    y,
+    cardW,
+    cardH,
+    formatDurationLong(stats.totalTimeMs),
+    "LISTENED",
+    accent,
+    true,
+  );
+  drawStatCard(
+    ctx,
+    pad + cardW + gridGap,
+    y,
+    cardW,
+    cardH,
+    `${stats.trackCount}`,
+    "PLAYS",
+    accent,
+  );
+  drawStatCard(
+    ctx,
+    pad + (cardW + gridGap) * 2,
+    y,
+    cardW,
+    cardH,
+    `${stats.uniqueTrackCount}`,
+    "UNIQUE",
+    accent,
+  );
 
   const row2Y = y + cardH + gridGap;
-  drawStatCard(ctx, pad, row2Y, cardW, cardH, `${stats.uniqueArtistCount}`, "ARTISTS", accent);
-  drawStatCard(ctx, pad + cardW + gridGap, row2Y, cardW, cardH, stats.streakDays > 0 ? `${stats.streakDays}d` : "-", "STREAK", accent, stats.streakDays > 0);
-  drawStatCard(ctx, pad + (cardW + gridGap) * 2, row2Y, cardW, cardH, `${Math.round(stats.skipRate * 100)}%`, "SKIP RATE", accent);
+  drawStatCard(
+    ctx,
+    pad,
+    row2Y,
+    cardW,
+    cardH,
+    `${stats.uniqueArtistCount}`,
+    "ARTISTS",
+    accent,
+  );
+  drawStatCard(
+    ctx,
+    pad + cardW + gridGap,
+    row2Y,
+    cardW,
+    cardH,
+    (stats.streakDays ?? 0) > 0 ? `${stats.streakDays}d` : "-",
+    "STREAK",
+    accent,
+    (stats.streakDays ?? 0) > 0,
+  );
+  drawStatCard(
+    ctx,
+    pad + (cardW + gridGap) * 2,
+    row2Y,
+    cardW,
+    cardH,
+    `${Math.round(stats.skipRate * 100)}%`,
+    "SKIP RATE",
+    accent,
+  );
 
   y = row2Y + cardH + 32;
 
@@ -545,7 +616,13 @@ async function generateStoryCard(
   const listRowH = 68;
 
   async function drawStoryList(
-    items: Array<{ name: string; sub: string; art?: string; plays?: number; circular?: boolean }>,
+    items: Array<{
+      name: string;
+      sub: string;
+      art?: string;
+      plays?: number;
+      circular?: boolean;
+    }>,
     startY: number,
     sectionTitle: string,
     maxItems: number,
@@ -558,7 +635,14 @@ async function generateStoryCard(
 
     // Panel background
     ctx.fillStyle = "rgba(255,255,255,0.02)";
-    fillRoundRect(ctx, pad - 12, startY - 8, innerW + 24, listRowH * count + 16, 14);
+    fillRoundRect(
+      ctx,
+      pad - 12,
+      startY - 8,
+      innerW + 24,
+      listRowH * count + 16,
+      14,
+    );
 
     for (let i = 0; i < count; i++) {
       const item = items[i];
@@ -566,7 +650,14 @@ async function generateStoryCard(
       const artY2 = rowY + (listRowH - listArtSize) / 2;
       const radius = item.circular ? listArtSize / 2 : 8;
 
-      const drew = await drawArt(ctx, item.art, pad, artY2, listArtSize, radius);
+      const drew = await drawArt(
+        ctx,
+        item.art,
+        pad,
+        artY2,
+        listArtSize,
+        radius,
+      );
       if (!drew) drawPlaceholderArt(ctx, pad, artY2, listArtSize, radius);
 
       const textX = pad + listArtSize + 16;
@@ -580,11 +671,27 @@ async function generateStoryCard(
       const rkW = ctx.measureText(rk).width + 8;
       ctx.fillStyle = "#fff";
       ctx.font = `600 ${16}px ${FONT}`;
-      ctx.fillText(truncateText(ctx, item.name, rightEdge - textX - rkW - (item.plays ? 90 : 10)), textX + rkW, centerY - 9);
+      ctx.fillText(
+        truncateText(
+          ctx,
+          item.name,
+          rightEdge - textX - rkW - (item.plays ? 90 : 10),
+        ),
+        textX + rkW,
+        centerY - 9,
+      );
 
       ctx.fillStyle = "rgba(255,255,255,0.5)";
       ctx.font = `${13}px ${FONT}`;
-      ctx.fillText(truncateText(ctx, item.sub, rightEdge - textX - rkW - (item.plays ? 90 : 10)), textX + rkW, centerY + 11);
+      ctx.fillText(
+        truncateText(
+          ctx,
+          item.sub,
+          rightEdge - textX - rkW - (item.plays ? 90 : 10),
+        ),
+        textX + rkW,
+        centerY + 11,
+      );
 
       if (item.plays) {
         ctx.fillStyle = rgb(accent);
@@ -601,24 +708,45 @@ async function generateStoryCard(
   // ── Top 5 Tracks ──
   if (stats.topTracks.length > 0) {
     y = await drawStoryList(
-      stats.topTracks.map((t) => ({ name: t.trackName, sub: t.artistName, art: t.albumArt, plays: t.playCount })),
-      y, "Top Tracks", 5,
+      stats.topTracks.map((t) => ({
+        name: t.trackName,
+        sub: t.artistName,
+        art: t.albumArt,
+        plays: t.playCount,
+      })),
+      y,
+      "Top Tracks",
+      5,
     );
   }
 
   // ── Top 5 Artists ──
   if (stats.topArtists.length > 0) {
     y = await drawStoryList(
-      stats.topArtists.map((a) => ({ name: a.artistName, sub: a.playCount ? `${a.playCount} plays` : "", art: a.artistImage, circular: true })),
-      y, "Top Artists", 5,
+      stats.topArtists.map((a) => ({
+        name: a.artistName,
+        sub: a.playCount ? `${a.playCount} plays` : "",
+        art: a.artistImage,
+        circular: true,
+      })),
+      y,
+      "Top Artists",
+      5,
     );
   }
 
   // ── Top 5 Albums ──
   if (stats.topAlbums.length > 0) {
     y = await drawStoryList(
-      stats.topAlbums.map((a) => ({ name: a.albumName, sub: a.artistName, art: a.albumArt, plays: a.playCount })),
-      y, "Top Albums", 5,
+      stats.topAlbums.map((a) => ({
+        name: a.albumName,
+        sub: a.artistName,
+        art: a.albumArt,
+        plays: a.playCount,
+      })),
+      y,
+      "Top Albums",
+      5,
     );
   }
 
@@ -642,7 +770,16 @@ async function generateStoryCard(
     ctx.textAlign = "left";
 
     y += 40;
-    drawHourlyChart(ctx, stats.hourlyDistribution, pad, y, innerW, 140, accent, stats.peakHour);
+    drawHourlyChart(
+      ctx,
+      stats.hourlyDistribution,
+      pad,
+      y,
+      innerW,
+      140,
+      accent,
+      stats.peakHour,
+    );
     y += 140 + 20;
   }
 
@@ -750,7 +887,14 @@ async function generateLandscapeCard(
   const artX = pad;
   const artY = heroY;
   if (stats.topTracks[0]) {
-    const drew = await drawArt(ctx, stats.topTracks[0].albumArt, artX, artY, artSize, 14);
+    const drew = await drawArt(
+      ctx,
+      stats.topTracks[0].albumArt,
+      artX,
+      artY,
+      artSize,
+      14,
+    );
     if (!drew) drawPlaceholderArt(ctx, artX, artY, artSize, 14);
 
     // Glow
@@ -801,18 +945,81 @@ async function generateLandscapeCard(
   const statCardW = (leftW - 12) / 3;
   const statCardH = 60;
 
-  drawStatCard(ctx, pad, statY, statCardW, statCardH, formatDuration(stats.totalTimeMs), "LISTENED", accent, true);
-  drawStatCard(ctx, pad + statCardW + 6, statY, statCardW, statCardH, `${stats.trackCount}`, "PLAYS", accent);
-  drawStatCard(ctx, pad + (statCardW + 6) * 2, statY, statCardW, statCardH, `${stats.uniqueArtistCount}`, "ARTISTS", accent);
+  drawStatCard(
+    ctx,
+    pad,
+    statY,
+    statCardW,
+    statCardH,
+    formatDuration(stats.totalTimeMs),
+    "LISTENED",
+    accent,
+    true,
+  );
+  drawStatCard(
+    ctx,
+    pad + statCardW + 6,
+    statY,
+    statCardW,
+    statCardH,
+    `${stats.trackCount}`,
+    "PLAYS",
+    accent,
+  );
+  drawStatCard(
+    ctx,
+    pad + (statCardW + 6) * 2,
+    statY,
+    statCardW,
+    statCardH,
+    `${stats.uniqueArtistCount}`,
+    "ARTISTS",
+    accent,
+  );
 
   const stat2Y = statY + statCardH + 8;
-  drawStatCard(ctx, pad, stat2Y, statCardW, statCardH, `${stats.uniqueTrackCount}`, "UNIQUE", accent);
-  drawStatCard(ctx, pad + statCardW + 6, stat2Y, statCardW, statCardH, stats.streakDays > 0 ? `${stats.streakDays}d` : "-", "STREAK", accent, stats.streakDays > 0);
-  drawStatCard(ctx, pad + (statCardW + 6) * 2, stat2Y, statCardW, statCardH, `${Math.round(stats.skipRate * 100)}%`, "SKIP RATE", accent);
+  drawStatCard(
+    ctx,
+    pad,
+    stat2Y,
+    statCardW,
+    statCardH,
+    `${stats.uniqueTrackCount}`,
+    "UNIQUE",
+    accent,
+  );
+  drawStatCard(
+    ctx,
+    pad + statCardW + 6,
+    stat2Y,
+    statCardW,
+    statCardH,
+    (stats.streakDays ?? 0) > 0 ? `${stats.streakDays}d` : "-",
+    "STREAK",
+    accent,
+    (stats.streakDays ?? 0) > 0,
+  );
+  drawStatCard(
+    ctx,
+    pad + (statCardW + 6) * 2,
+    stat2Y,
+    statCardW,
+    statCardH,
+    `${Math.round(stats.skipRate * 100)}%`,
+    "SKIP RATE",
+    accent,
+  );
 
   // Genre pills below stats
   if (stats.topGenres.length > 0) {
-    drawGenrePills(ctx, stats.topGenres, pad, stat2Y + statCardH + 16, leftW, accent);
+    drawGenrePills(
+      ctx,
+      stats.topGenres,
+      pad,
+      stat2Y + statCardH + 16,
+      leftW,
+      accent,
+    );
   }
 
   // ── Right Panel: 3 columns ──
@@ -827,7 +1034,13 @@ async function generateLandscapeCard(
 
   // Helper: draw a ranked list section
   async function drawRankedList(
-    items: Array<{ name: string; sub: string; art?: string; plays?: number; circular?: boolean }>,
+    items: Array<{
+      name: string;
+      sub: string;
+      art?: string;
+      plays?: number;
+      circular?: boolean;
+    }>,
     colX: number,
     startY: number,
     title: string,
@@ -855,7 +1068,14 @@ async function generateLandscapeCard(
       const artY2 = rowY + (listRowH - listArtSize) / 2;
       const radius = item.circular ? listArtSize / 2 : 6;
 
-      const drew = await drawArt(ctx, item.art, colX, artY2, listArtSize, radius);
+      const drew = await drawArt(
+        ctx,
+        item.art,
+        colX,
+        artY2,
+        listArtSize,
+        radius,
+      );
       if (!drew) drawPlaceholderArt(ctx, colX, artY2, listArtSize, radius);
 
       const textX = colX + listArtSize + 12;
@@ -882,7 +1102,9 @@ async function generateLandscapeCard(
       // Sub line (artist or play count)
       ctx.fillStyle = "rgba(255,255,255,0.45)";
       ctx.font = `${11}px ${FONT}`;
-      const subText = item.plays ? `${item.sub} \u2022 ${item.plays}` : item.sub;
+      const subText = item.plays
+        ? `${item.sub} \u2022 ${item.plays}`
+        : item.sub;
       ctx.fillText(
         truncateText(ctx, subText, maxTextW - rkW),
         textX + rkW,
@@ -951,13 +1173,26 @@ async function generateLandscapeCard(
     ctx.fillStyle = "rgba(255,255,255,0.4)";
     ctx.font = `${13}px ${FONT}`;
     ctx.textAlign = "right";
-    ctx.fillText(`Peak: ${formatHourLabel(stats.peakHour)}`, rX + rInnerW, chartY + 14);
+    ctx.fillText(
+      `Peak: ${formatHourLabel(stats.peakHour)}`,
+      rX + rInnerW,
+      chartY + 14,
+    );
     ctx.textAlign = "left";
 
     const chartTopY = chartY + 28;
     const chartH = h - chartTopY - 40;
     if (chartH > 40) {
-      drawHourlyChart(ctx, stats.hourlyDistribution, rX, chartTopY, rInnerW, chartH, accent, stats.peakHour);
+      drawHourlyChart(
+        ctx,
+        stats.hourlyDistribution,
+        rX,
+        chartTopY,
+        rInnerW,
+        chartH,
+        accent,
+        stats.peakHour,
+      );
     }
   }
 

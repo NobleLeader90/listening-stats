@@ -9,11 +9,15 @@ const EDGE_PADDING = 16;
 const REPOSITION_DEBOUNCE = 100;
 
 function lockScroll(): () => void {
-  const el = document.querySelector('.main-view-container__scroll-node') as HTMLElement | null;
+  const el = document.querySelector(
+    ".main-view-container__scroll-node",
+  ) as HTMLElement | null;
   if (!el) return () => {};
   const prev = el.style.overflowY;
-  el.style.overflowY = 'hidden';
-  return () => { el.style.overflowY = prev; };
+  el.style.overflowY = "hidden";
+  return () => {
+    el.style.overflowY = prev;
+  };
 }
 
 interface TourOverlayProps {
@@ -92,8 +96,14 @@ function computeTooltipPosition(
   }
 
   // Clamp to viewport
-  left = Math.max(EDGE_PADDING, Math.min(left, vw - TOOLTIP_WIDTH - EDGE_PADDING));
-  top = Math.max(EDGE_PADDING, Math.min(top, vh - TOOLTIP_HEIGHT - EDGE_PADDING));
+  left = Math.max(
+    EDGE_PADDING,
+    Math.min(left, vw - TOOLTIP_WIDTH - EDGE_PADDING),
+  );
+  top = Math.max(
+    EDGE_PADDING,
+    Math.min(top, vh - TOOLTIP_HEIGHT - EDGE_PADDING),
+  );
 
   return { top, left, actualPlacement };
 }
@@ -141,9 +151,9 @@ export function TourOverlay({
     }
 
     // Add highlight class for drag handle steps
-    const needsHighlight = step.target === '.section-drag-handle';
+    const needsHighlight = step.target === ".section-drag-handle";
     if (needsHighlight) {
-      el.classList.add('tour-highlight-handle');
+      el.classList.add("tour-highlight-handle");
     }
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -167,7 +177,7 @@ export function TourOverlay({
       clearTimeout(timer);
       unlockScroll();
       if (needsHighlight) {
-        el.classList.remove('tour-highlight-handle');
+        el.classList.remove("tour-highlight-handle");
       }
     };
   }, [step.target, updatePosition, onNext, abortSignal]);
@@ -176,7 +186,10 @@ export function TourOverlay({
   useEffect(() => {
     const handleReposition = () => {
       clearTimeout(debounceRef.current);
-      debounceRef.current = window.setTimeout(updatePosition, REPOSITION_DEBOUNCE);
+      debounceRef.current = window.setTimeout(
+        updatePosition,
+        REPOSITION_DEBOUNCE,
+      );
     };
 
     const scrollContainer = document.querySelector(

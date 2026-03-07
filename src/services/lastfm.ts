@@ -1,5 +1,5 @@
-import { LastfmConfig } from "../types/listeningstats";
 import { LS_KEYS } from "../constants";
+import { LastfmConfig } from "../types/listeningstats";
 
 const LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/";
 const CACHE_TTL_MS = 300000;
@@ -293,6 +293,7 @@ export interface LastfmRecentTrack {
 
 export async function getRecentTracks(
   limit = 50,
+  page = 1,
 ): Promise<LastfmRecentTrack[]> {
   const config = getConfig();
   if (!config) return [];
@@ -301,6 +302,7 @@ export async function getRecentTracks(
     method: "user.getrecenttracks",
     user: config.username,
     limit: String(limit),
+    page: String(page),
   });
 
   const tracks = data.recenttracks?.track || [];
@@ -333,6 +335,28 @@ export async function getUserInfo(): Promise<LastfmUserInfo | null> {
     console.warn("[listening-stats] Last.fm date parsing failed", e);
     return null;
   }
+}
+
+export async function hasDayActivity(date: Date): Promise<boolean> {
+  const config = getConfig();
+  if (!config) return false;
+
+  const dayStart = new Date(date);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(date);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  const data = await lastfmFetch<any>({
+    method: "user.getrecenttracks",
+    user: config.username,
+    limit: "2",
+    from: String(Math.floor(dayStart.getTime() / 1000)),
+    to: String(Math.floor(dayEnd.getTime() / 1000)),
+  });
+
+  const tracks = data.recenttracks?.track || [];
+  // Filter out "now playing" track (has no date), only count real scrobbles
+  return tracks.some((t: any) => t.date && !t["@attr"]?.nowplaying);
 }
 
 export function normalize(s: string): string {

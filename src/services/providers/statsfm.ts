@@ -1,8 +1,9 @@
 import { ListeningStats, RecentTrack } from "../../types/listeningstats";
+import { calculateStreak } from "../../utils/streak";
+import { toLocalDateKey } from "../../utils/dateKey";
 import * as Statsfm from "../statsfm";
 import { initPoller, destroyPoller, getPollingData } from "../tracker";
 import type { TrackingProvider } from "./types";
-import { calculateStreak } from "../../utils/streak";
 
 const FREE_PERIODS = ["weeks", "months", "lifetime"] as const;
 const FREE_LABELS: Record<string, string> = {
@@ -34,7 +35,9 @@ export function createStatsfmProvider(): TrackingProvider {
     init() {
       initPoller("statsfm");
       // Fire-and-forget: detect tier upgrades between sessions
-      Statsfm.refreshPlusStatus().catch(() => {/* ignore */});
+      Statsfm.refreshPlusStatus().catch(() => {
+        /* ignore */
+      });
     },
 
     destroy() {
@@ -43,6 +46,41 @@ export function createStatsfmProvider(): TrackingProvider {
 
     async calculateStats(period: string): Promise<ListeningStats> {
       return calculateStatsfmStats(period as Statsfm.StatsfmRange);
+    },
+
+    async calculateDateMetrics(
+      _period: string,
+    ): Promise<{ streakDays: number }> {
+      if (isPlus) {
+        // Plus users: paginate full stream history for accurate streak
+        const allDates = new Set<string>();
+        let before: number | undefined;
+        for (let page = 0; page < 20; page++) {
+          const streams = await Statsfm.getStreams({
+            limit: 200,
+            order: "desc",
+            ...(before ? { before } : {}),
+          });
+          if (streams.length === 0) break;
+          for (const s of streams) {
+            allDates.add(toLocalDateKey(new Date(s.endTime)));
+          }
+          const streak = calculateStreak([...allDates]);
+          const oldestDate = new Date(streams[streams.length - 1].endTime);
+          const daysBack = Math.floor(
+            (Date.now() - oldestDate.getTime()) / 86400000,
+          );
+          if (streak < daysBack) {
+            return { streakDays: streak };
+          }
+          before = new Date(streams[streams.length - 1].endTime).getTime();
+        }
+        return { streakDays: calculateStreak([...allDates]) };
+      }
+      // Free/non-Plus users: derive streak from recent streams endpoint
+      const recent = await Statsfm.getRecentStreams(50).catch(() => []);
+      const dates = recent.map((s) => toLocalDateKey(new Date(s.endTime)));
+      return { streakDays: calculateStreak(dates) };
     },
   };
 }
@@ -69,7 +107,9 @@ async function calculateStatsfmStats(
       count: 0,
       cardinality: { tracks: 0, artists: 0, albums: 0 },
     })),
-    Statsfm.getDateStats(range).catch(() => ({ hours: {} as Record<number, { durationMs: number; count: number }> })),
+    Statsfm.getDateStats(range).catch(() => ({
+      hours: {} as Record<number, { durationMs: number; count: number }>,
+    })),
   ]);
 
   const pollingData = getPollingData();
@@ -203,12 +243,6 @@ async function calculateStatsfmStats(
     0,
   );
 
-  const activityDates = [
-    ...new Set(
-      recentTracks.map((t) => new Date(t.playedAt).toISOString().split("T")[0]),
-    ),
-  ];
-
   return {
     totalTimeMs: streamStats.durationMs || totalTimeMs,
     trackCount: streamStats.count || totalPlays,
@@ -223,14 +257,13 @@ async function calculateStatsfmStats(
     recentTracks,
     genres,
     topGenres,
-    streakDays: calculateStreak(activityDates),
+    streakDays: null,
     newArtistsCount: 0,
     skipRate:
       pollingData.totalPlays > 0
         ? pollingData.skipEvents / pollingData.totalPlays
         : 0,
-    listenedDays: activityDates.length,
+    listenedDays: null,
     lastfmConnected: false,
   };
 }
-

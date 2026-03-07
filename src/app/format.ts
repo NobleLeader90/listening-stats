@@ -49,25 +49,37 @@ export function renderMarkdown(text: string): string {
 
     // Headings
     if (line.match(/^###\s+(.+)$/)) {
-      if (inList) { processed.push("</ul>"); inList = false; }
+      if (inList) {
+        processed.push("</ul>");
+        inList = false;
+      }
       processed.push(`<h5>${line.replace(/^###\s+/, "")}</h5>`);
       continue;
     }
     if (line.match(/^##\s+(.+)$/)) {
-      if (inList) { processed.push("</ul>"); inList = false; }
+      if (inList) {
+        processed.push("</ul>");
+        inList = false;
+      }
       processed.push(`<h4>${line.replace(/^##\s+/, "")}</h4>`);
       continue;
     }
 
     // List items (- or *, with optional leading whitespace)
     if (line.match(/^\s*[\-\*]\s+(.+)$/)) {
-      if (!inList) { processed.push("<ul>"); inList = true; }
+      if (!inList) {
+        processed.push("<ul>");
+        inList = true;
+      }
       processed.push(`<li>${line.replace(/^\s*[\-\*]\s+/, "")}</li>`);
       continue;
     }
 
     // Non-list line: close any open list
-    if (inList) { processed.push("</ul>"); inList = false; }
+    if (inList) {
+      processed.push("</ul>");
+      inList = false;
+    }
 
     // Empty line -> paragraph break
     if (line.trim() === "") {
@@ -79,17 +91,25 @@ export function renderMarkdown(text: string): string {
   }
 
   // Close any remaining open list
-  if (inList) { processed.push("</ul>"); }
+  if (inList) {
+    processed.push("</ul>");
+  }
 
   html = processed.join("\n");
 
   // Inline formatting: bold, italic, links
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>");
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  html = html.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+  );
 
   // Restore inline code blocks
-  html = html.replace(/\x00CODE(\d+)\x00/g, (_match, idx) => codeBlocks[parseInt(idx)]);
+  html = html.replace(
+    /\x00CODE(\d+)\x00/g,
+    (_match, idx) => codeBlocks[parseInt(idx)],
+  );
 
   // Convert remaining single newlines to <br> (but not inside tags)
   // Only between non-tag lines (not after </ul>, </h4>, etc.)

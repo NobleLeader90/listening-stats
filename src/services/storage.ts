@@ -378,7 +378,10 @@ export async function clearAllData(): Promise<void> {
  * Writes a test entry and immediately deletes it to verify the DB is writable.
  * Shared by startupIntegrityCheck() and the window.ListeningStats.testWrite() console API.
  */
-export async function runTrackingTest(): Promise<{ ok: boolean; error?: string }> {
+export async function runTrackingTest(): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
   try {
     const db = await getDB();
     // Write test entry
@@ -419,7 +422,10 @@ export async function runTrackingTest(): Promise<{ ok: boolean; error?: string }
  * Verifies DB is accessible, object store exists, required indexes are intact,
  * and a write+delete roundtrip succeeds. Called on local provider init.
  */
-export async function startupIntegrityCheck(): Promise<{ ok: boolean; error?: string }> {
+export async function startupIntegrityCheck(): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
   try {
     const db = await getDB();
     // Check object store exists
@@ -429,7 +435,12 @@ export async function startupIntegrityCheck(): Promise<{ ok: boolean; error?: st
     // Verify required indexes
     const tx = db.transaction(STORE_NAME, "readonly");
     const store = tx.store;
-    const requiredIndexes = ["by-startedAt", "by-trackUri", "by-artistUri", "by-type"];
+    const requiredIndexes = [
+      "by-startedAt",
+      "by-trackUri",
+      "by-artistUri",
+      "by-type",
+    ];
     for (const idx of requiredIndexes) {
       if (!store.indexNames.contains(idx)) {
         tx.abort();

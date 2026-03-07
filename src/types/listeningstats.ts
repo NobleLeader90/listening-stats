@@ -50,10 +50,10 @@ export interface ListeningStats {
   recentTracks: RecentTrack[];
   genres: Record<string, number>;
   topGenres: Array<{ genre: string; count: number }>;
-  streakDays: number;
+  streakDays: number | null;
   newArtistsCount: number;
   skipRate: number;
-  listenedDays: number;
+  listenedDays: number | null;
   lastfmConnected: boolean;
   totalScrobbles?: number;
 }

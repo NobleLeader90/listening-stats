@@ -362,7 +362,8 @@ async function writePlayEvent(
     }
   } catch (err) {
     _trackingStatus.healthy = false;
-    _trackingStatus.lastError = err instanceof Error ? err.message : String(err);
+    _trackingStatus.lastError =
+      err instanceof Error ? err.message : String(err);
     warn(" Failed to write play event:", err);
     if (!_trackingFailureNotified) {
       _trackingFailureNotified = true;
@@ -418,7 +419,7 @@ let _visibilityHandler: (() => void) | null = null;
 export function initPoller(providerType: ProviderType): void {
   const win = window as any;
 
-  // Only initialize once — local tracking is permanent, never re-registered or destroyed
+  // Only initialize once, local tracking is permanent, never re-registered or destroyed
   if (win.__lsPollerInitialized) return;
   win.__lsPollerInitialized = true;
 
@@ -505,7 +506,9 @@ export function initPoller(providerType: ProviderType): void {
     }
     // Ping DB to force reconnect if stale
     getDB().catch(() => {
-      warn("Visibility restored: DB ping failed, connection will reconnect on next write");
+      warn(
+        "Visibility restored: DB ping failed, connection will reconnect on next write",
+      );
     });
   };
   document.addEventListener("visibilitychange", _visibilityHandler);
@@ -513,5 +516,5 @@ export function initPoller(providerType: ProviderType): void {
 
 export function destroyPoller(): void {
   // No-op: local tracking is permanent and never destroyed.
-  // Managed exclusively by extension.js — survives all provider switches.
+  // Managed exclusively by extension.js, survives all provider switches.
 }

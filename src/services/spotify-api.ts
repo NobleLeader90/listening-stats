@@ -15,7 +15,9 @@ const MAX_BACKOFF_MS = 600000;
 let rateLimitedUntil = 0;
 
 try {
-  const stored = localStorage.getItem(`${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`);
+  const stored = localStorage.getItem(
+    `${LS_KEYS.STORAGE_PREFIX}rateLimitedUntil`,
+  );
   if (stored) {
     const val = parseInt(stored, 10);
     rateLimitedUntil = Date.now() >= val ? 0 : val;
@@ -111,7 +113,9 @@ function enqueueWithPriority<T>(
 
   const promise = new Promise<T>((resolve, reject) => {
     queue.push({ key, fn, resolve, reject, priority });
-    queue.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
+    queue.sort(
+      (a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority],
+    );
     if (!draining) drainQueue();
   });
 
@@ -134,7 +138,11 @@ async function drainQueue(): Promise<void> {
       const result = await circuitBreaker.execute(() => item.fn());
       item.resolve(result);
     } catch (error: any) {
-      if (error?.message?.includes("429") || error?.status === 429 || error?.statusCode === 429) {
+      if (
+        error?.message?.includes("429") ||
+        error?.status === 429 ||
+        error?.statusCode === 429
+      ) {
         setRateLimit(error);
       }
       item.reject(error);
@@ -159,11 +167,7 @@ async function apiFetch<T>(url: string): Promise<T> {
     } catch (err: any) {
       if (err?.status === 429 || String(err?.message || "").includes("429")) {
         setRateLimit(err);
-        throw new ApiError(
-          err?.message || "Rate limited",
-          429,
-          true,
-        );
+        throw new ApiError(err?.message || "Rate limited", 429, true);
       }
       const status = err?.status as number | undefined;
       throw new ApiError(
@@ -178,8 +182,7 @@ async function apiFetch<T>(url: string): Promise<T> {
     }
     if (response.error) {
       const status: number = response.error.status;
-      const message =
-        response.error.message || `Spotify API error ${status}`;
+      const message = response.error.message || `Spotify API error ${status}`;
       if (status === 429) setRateLimit(response);
       throw new ApiError(message, status, status === 429 || status >= 500);
     }

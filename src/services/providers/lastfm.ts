@@ -1,8 +1,9 @@
 import { ListeningStats, RecentTrack } from "../../types/listeningstats";
+import { calculateStreak } from "../../utils/streak";
+import { toLocalDateKey } from "../../utils/dateKey";
 import * as LastFm from "../lastfm";
 import { destroyPoller, getPollingData, initPoller } from "../tracker";
 import type { TrackingProvider } from "./types";
-import { calculateStreak } from "../../utils/streak";
 
 const PERIODS = [
   "recent",
@@ -44,6 +45,30 @@ export function createLastfmProvider(): TrackingProvider {
         return calculateRecentStats();
       }
       return calculateRankedStats(period);
+    },
+
+    async calculateDateMetrics(
+      _period: string,
+    ): Promise<{ streakDays: number }> {
+      // Paginate backwards through recent tracks, matching stats.fm approach
+      const allDates = new Set<string>();
+      for (let page = 1; page <= 20; page++) {
+        const tracks = await LastFm.getRecentTracks(200, page);
+        const realTracks = tracks.filter((t) => !t.nowPlaying);
+        if (realTracks.length === 0) break;
+        for (const t of realTracks) {
+          allDates.add(toLocalDateKey(new Date(t.playedAt)));
+        }
+        const streak = calculateStreak([...allDates]);
+        const oldestTrack = realTracks[realTracks.length - 1];
+        const daysBack = Math.floor(
+          (Date.now() - new Date(oldestTrack.playedAt).getTime()) / 86400000,
+        );
+        if (streak < daysBack) {
+          return { streakDays: streak };
+        }
+      }
+      return { streakDays: calculateStreak([...allDates]) };
     },
   };
 }
@@ -195,12 +220,6 @@ async function calculateRecentStats(): Promise<ListeningStats> {
     }
   }
 
-  const activityDates = [
-    ...new Set(
-      recentTracks.map((t) => new Date(t.playedAt).toISOString().split("T")[0]),
-    ),
-  ];
-
   return {
     totalTimeMs: estimatedTimeMs,
     trackCount: recentTracks.length,
@@ -215,13 +234,13 @@ async function calculateRecentStats(): Promise<ListeningStats> {
     recentTracks,
     genres: {},
     topGenres: [],
-    streakDays: calculateStreak(activityDates),
+    streakDays: null,
     newArtistsCount: 0,
     skipRate:
       pollingData.totalPlays > 0
         ? pollingData.skipEvents / pollingData.totalPlays
         : 0,
-    listenedDays: activityDates.length,
+    listenedDays: null,
     lastfmConnected: true,
     totalScrobbles: userInfo?.totalScrobbles,
   };
@@ -304,12 +323,6 @@ async function calculateRankedStats(period: string): Promise<ListeningStats> {
     0,
   );
 
-  const activityDates = [
-    ...new Set(
-      recentTracks.map((t) => new Date(t.playedAt).toISOString().split("T")[0]),
-    ),
-  ];
-
   return {
     totalTimeMs,
     trackCount: totalPlays,
@@ -324,15 +337,14 @@ async function calculateRankedStats(period: string): Promise<ListeningStats> {
     recentTracks,
     genres: {},
     topGenres: [],
-    streakDays: calculateStreak(activityDates),
+    streakDays: null,
     newArtistsCount: 0,
     skipRate:
       pollingData.totalPlays > 0
         ? pollingData.skipEvents / pollingData.totalPlays
         : 0,
-    listenedDays: activityDates.length,
+    listenedDays: null,
     lastfmConnected: true,
     totalScrobbles: userInfo?.totalScrobbles,
   };
 }
-

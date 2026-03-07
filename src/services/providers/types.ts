@@ -11,4 +11,5 @@ export interface TrackingProvider {
   calculateStats(period: string): Promise<ListeningStats>;
   prefetchPeriod?(period: string): void;
   clearData?(): void;
+  calculateDateMetrics?(period: string): Promise<{ streakDays: number }>;
 }

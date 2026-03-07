@@ -183,10 +183,7 @@ function ChooseStep({
         <span>or</span>
       </div>
 
-      <button
-        className="setup-alt-option"
-        onClick={() => onChoose("local")}
-      >
+      <button className="setup-alt-option" onClick={() => onChoose("local")}>
         <span dangerouslySetInnerHTML={{ __html: Icons.music }} />
         <div>
           <strong>Use Local Tracking instead</strong>
@@ -396,8 +393,7 @@ function SuccessStep({
   username: string;
   onComplete: () => void;
 }) {
-  const providerLabel =
-    provider === "statsfm" ? "stats.fm" : "Last.fm";
+  const providerLabel = provider === "statsfm" ? "stats.fm" : "Last.fm";
 
   return (
     <div className="wizard-success">

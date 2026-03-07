@@ -74,7 +74,10 @@ export function TopLists({
                     }}
                   />
                 ) : (
-                  <TooltipWrapper label="No Spotify link, can't save to library" placement="top">
+                  <TooltipWrapper
+                    label="No Spotify link, can't save to library"
+                    placement="top"
+                  >
                     <span
                       className="heart-btn disabled"
                       dangerouslySetInnerHTML={{ __html: Icons.heart }}

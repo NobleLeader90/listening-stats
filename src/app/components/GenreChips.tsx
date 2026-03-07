@@ -23,7 +23,10 @@ export function GenreChips({ topGenres }: GenreChipsProps) {
               <div className="genre-bar-track">
                 <div
                   className="genre-bar-fill"
-                  style={{ width: `${pct}%`, animationDelay: `${0.1 + i * 0.04}s` }}
+                  style={{
+                    width: `${pct}%`,
+                    animationDelay: `${0.1 + i * 0.04}s`,
+                  }}
                 />
                 <span className="genre-bar-name">{g.genre}</span>
               </div>
